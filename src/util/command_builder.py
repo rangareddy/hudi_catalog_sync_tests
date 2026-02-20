@@ -224,18 +224,17 @@ df.write.format("hudi").\\
     @staticmethod
     def command_to_string(cmd: List[str]) -> str:
         """Format command list as a shell-quoted string for display.
-        Pairs --hoodie-conf with its value on the same line.
+        Pairs each option (e.g. --class, --master, --hoodie-conf) with its value on the same line.
         """
         segments: List[str] = []
         i = 0
         while i < len(cmd):
-            if cmd[i] == "--hoodie-conf" and i + 1 < len(cmd):
-                segments.append(
-                    shlex.quote(cmd[i]) + " " + shlex.quote(cmd[i + 1])
-                )
+            arg = cmd[i]
+            if arg.startswith("--") and i + 1 < len(cmd) and not cmd[i + 1].startswith("--"):
+                segments.append(shlex.quote(arg) + " " + shlex.quote(cmd[i + 1]))
                 i += 2
             else:
-                segments.append(shlex.quote(cmd[i]))
+                segments.append(shlex.quote(arg))
                 i += 1
         return " \\\n  ".join(segments)
 
