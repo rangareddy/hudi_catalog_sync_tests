@@ -1,0 +1,88 @@
+# Hudi Catalog Sync Tests - Configuration
+# Used by common sync methods for Hive, BigQuery, Glue, and DataHub.
+
+global:
+  spark_version: "3.5"
+  scala_version: "2.12"
+  hudi_version: "0.16.0-SNAPSHOT"
+  table_type: "COPY_ON_WRITE"
+  base_file_format: "PARQUET"
+  # Default table and path (often overridden per run)
+  table_name: "stocks_sync_test"
+  base_path: ""  # Set per env: gs://bucket/path, s3a://bucket/path, or file path
+  data_path: ""  # For streamer: props, schema.avsc, and source root (e.g. gs://bucket/data or s3a://bucket/data)
+  jars_path: ""  # Optional: base path for Hudi JARs (e.g. gs://bucket/jars or s3a://bucket/jars)
+  database_name: "default"
+  partition_fields: "date"
+  partition_value_extractor: "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor"
+  record_key_field: "symbol"
+  precombine_field: "ts"
+  partition_path_field: "date"
+  keygenerator_type: "SIMPLE"
+  hive_style_partitioning: true
+  metadata_enable: true
+
+# Hive Metastore sync (HiveSyncTool)
+hive:
+  enabled: true
+  sync_tool_class: "org.apache.hudi.hive.HiveSyncTool"
+  # Sync mode: "hms" (thrift) or "jdbc"
+  mode: "hms"
+  # For mode=hms
+  metastore_uris: "thrift://localhost:9083"
+  # For mode=jdbc (optional when using jdbc)
+  jdbc_url: "jdbc:hive2://localhost:10000"
+  database: "default"
+  table: ""  # Uses global.table_name if empty
+  partition_fields: "date"
+  partition_value_extractor: "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor"
+  # Additional hoodie.datasource.hive_sync.* options
+
+# Google BigQuery sync (BigQuerySyncTool)
+bigquery:
+  enabled: true
+  sync_tool_class: "org.apache.hudi.gcp.bigquery.BigQuerySyncTool"
+  project_id: "infra-dev-358110"
+  dataset_name: "hudi_release_testing"
+  dataset_location: "us-central1"
+  table_name: ""  # Uses global.table_name if empty
+  base_path: ""   # Uses global.base_path if empty
+  partition_fields: "date"
+  source_uri: ""  # e.g. "gs://bucket/path/table/date=*"
+  source_uri_prefix: ""  # e.g. "gs://bucket/path/table/"
+  use_file_listing_from_metadata: true
+  assume_date_partitioning: false
+  use_bq_manifest_file: true
+  partition_value_extractor: "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor"
+  # Spark packages for BigQuery (optional; for spark-submit)
+  packages: "com.google.cloud:google-cloud-bigquery:2.44.0,com.google.api-client:google-api-client:1.32.1,com.google.http-client:google-http-client-jackson2:1.39.2"
+
+# AWS Glue Data Catalog sync (AwsGlueCatalogSyncTool)
+glue:
+  enabled: true
+  sync_tool_class: "org.apache.hudi.aws.sync.AwsGlueCatalogSyncTool"
+  database: "hudi_db"
+  table: ""  # Uses global.table_name if empty
+  base_path: ""  # Uses global.base_path if empty (s3a://)
+  partition_fields: "date"
+  partition_value_extractor: "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor"
+  sync_mode: "jdbc"
+  jdbc_url: "jdbc:hive2://localhost:10000"
+  # Hoodie datasource hive_sync options when using streamer/datasource
+  hive_sync_database: "hudi_db"
+  hive_sync_table: ""
+  hive_sync_partition_fields: "date"
+  hive_sync_partition_extractor_class: "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor"
+  meta_sync_condition_sync: true
+
+# DataHub metadata sync (DataHubSyncTool)
+datahub:
+  enabled: true
+  sync_tool_class: "org.apache.hudi.sync.datahub.DataHubSyncTool"
+  emitter_server: "http://localhost:8080"
+  database: "datahub_db"
+  table: ""  # Uses global.table_name if empty
+  # Optional DataHub-specific options
+  table_properties: ""  # e.g. "property1=value1"
+  emit_log_metrics: true
+  schema_string_length_thresh: 4000
