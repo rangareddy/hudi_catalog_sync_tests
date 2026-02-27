@@ -676,13 +676,16 @@ def _jar_base(config: dict) -> tuple:
     g = get_global_config(config=config)
     jars_path = (g.get("jars_path") or "").rstrip("/")
     if not jars_path:
-        return None, None, g.get("hudi_version", "0.16.0-SNAPSHOT"), g.get("spark_major_version", "3.4")
-    spark_major_version = g.get("spark_major_version", "3.4")
-    hudi_version = g.get("hudi_version", "0.16.0-SNAPSHOT")
-    scala = g.get("scala_version", "2.12")
+        get_logger(__name__).error(f"Jars path is not set in config: {config}")
+        raise ValueError(f"Jars path is not set in config: {config}")
+    spark_major_version = g.get("spark_major_version")
+    hudi_version = g.get("hudi_version")
+    scala = g.get("scala_version")
     base = os.path.join(jars_path, hudi_version, spark_major_version)
+    if not os.path.exists(base):
+        get_logger(__name__).error(f"Jars path does not exist: {base}")
+        raise ValueError(f"Jars path does not exist: {base}")
     return base, scala, hudi_version, spark_major_version
-
 
 def _command_to_string(cmd: List[str]) -> str:
     segments: List[str] = []
@@ -716,16 +719,19 @@ class CommandBuilder:
 
     def _get_jar_args_and_utilities_jar(self, sync_type: str) -> tuple[List[str], str]:
         base, scala, hudi_version, spark_version = _jar_base(self._config)
-        if base is None:
-            if sync_type == "bigquery":
-                return (["--jars", "${HUDI_JARS}", "--packages", "${PACKAGES}"], "${HUDI_UTILITIES_SLIM_JAR}")
-            return ["--jars", "${HUDI_JARS}"], "${HUDI_UTILITIES_SLIM_JAR}"
-        
-        spark_major_version = re.match(r"\d+\.\d+", spark_version).group()
-        hudi_spark_jar = f"{base}/hudi-spark{spark_major_version}-bundle_{scala}-{hudi_version}.jar"
-        utilities_slim = f"{base}/hudi-utilities-slim-bundle_{scala}-{hudi_version}.jar"
+        hudi_spark_jar = os.path.join(base, f"hudi-spark{spark_version}-bundle_{scala}-{hudi_version}.jar")
+        if not os.path.exists(hudi_spark_jar):
+            get_logger(__name__).error(f"Hudi Spark jar does not exist: {hudi_spark_jar}")
+            raise ValueError(f"Hudi Spark jar does not exist: {hudi_spark_jar}")    
+        utilities_slim = os.path.join(base, f"hudi-utilities-slim-bundle_{scala}-{hudi_version}.jar")
+        if not os.path.exists(utilities_slim):
+            get_logger(__name__).error(f"Hudi Utilities Slim jar does not exist: {utilities_slim}")
+            raise ValueError(f"Hudi Utilities Slim jar does not exist: {utilities_slim}")
         if sync_type == "bigquery":
-            gcp_jar = f"{base}/hudi-gcp-bundle-{hudi_version}.jar"
+            gcp_jar = os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar")
+            if not os.path.exists(gcp_jar):
+                get_logger(__name__).error(f"Hudi GCP jar does not exist: {gcp_jar}")
+                raise ValueError(f"Hudi GCP jar does not exist: {gcp_jar}")
             jars = f"{gcp_jar},{hudi_spark_jar}"
             tool = get_sync_tool(sync_type, config=self._config)
             packages = getattr(tool, "spark_packages", "") if hasattr(tool, "spark_packages") else ""
@@ -735,12 +741,25 @@ class CommandBuilder:
             return args, utilities_slim
         if sync_type == "glue":
             aws_jar = os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar")
+            if not os.path.exists(aws_jar):
+                get_logger(__name__).error(f"Hudi AWS jar does not exist: {aws_jar}")
+                raise ValueError(f"Hudi AWS jar does not exist: {aws_jar}")
             jars = f"{hudi_spark_jar},{aws_jar}"
             return ["--jars", jars], utilities_slim
         if sync_type == "datahub":
             datahub_jar = os.path.join(base, f"hudi-datahub-sync-bundle-{hudi_version}.jar")
+            if not os.path.exists(datahub_jar):
+                get_logger(__name__).error(f"Hudi Datahub jar does not exist: {datahub_jar}")
+                raise ValueError(f"Hudi Datahub jar does not exist: {datahub_jar}")
             return ["--jars", f"{hudi_spark_jar},{datahub_jar}"], utilities_slim
+        if sync_type == "hive":
+            hive_jar = os.path.join(base, f"hudi-hive-sync-bundle-{hudi_version}.jar")
+            if not os.path.exists(hive_jar):
+                get_logger(__name__).error(f"Hudi Hive jar does not exist: {hive_jar}")
+                raise ValueError(f"Hudi Hive jar does not exist: {hive_jar}")
+            return ["--jars", f"{hudi_spark_jar},{hive_jar}"], utilities_slim
         return ["--jars", hudi_spark_jar], utilities_slim
+
 
     def _get_standalone_main_jar(self, sync_type: str) -> str:
         base, _, hudi_version, _ = _jar_base(self._config)
