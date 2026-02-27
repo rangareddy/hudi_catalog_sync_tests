@@ -106,12 +106,16 @@ def load_config(config_path: Optional[os.PathLike] = None) -> dict[str, Any]:
 def get_global_config(config: Optional[dict] = None, config_path: Optional[os.PathLike] = None) -> dict[str, Any]:
     if config is None:
         config = load_config(config_path)
-    global_cfg = config.get("global", {})
-    global_cfg["hudi_version"] = global_cfg.get("hudi_version", "0.15.0-SNAPSHOT") 
-    global_cfg["hudi_version_str"] = re.match(r"\d+\.\d+\.\d+", global_cfg.get("hudi_version")).group().replace(".","_")
-    global_cfg["spark_major_version"] = re.match(r"\d+\.\d+", global_cfg.get("spark_version", "3.4.4")).group()
-    global_cfg["base_table_name"] = global_cfg.get("base_table_name", "stock_ticks")
-    global_cfg["base_table_path"] = global_cfg.get("base_table_path", "/tmp/hudi_catalog_sync/tables")
+    global_cfg = dict(config.get("global", {}))
+    # Derived keys (use copy to avoid mutating caller's config)
+    hudi_ver = global_cfg.get("hudi_version", "0.16.0-SNAPSHOT")
+    match = re.match(r"(\d+\.\d+(?:\.\d+)?)", str(hudi_ver))
+    global_cfg["hudi_version_str"] = match.group(1).replace(".", "_") if match else "0_16_0"
+    spark_ver = global_cfg.get("spark_version", "3.4.4")
+    spark_match = re.match(r"(\d+\.\d+)", str(spark_ver))
+    global_cfg["spark_major_version"] = spark_match.group(1) if spark_match else "3.4"
+    global_cfg.setdefault("base_table_name", "stock_ticks")
+    global_cfg.setdefault("base_table_path", "/tmp/hudi_catalog_sync/tables")
     return global_cfg
 
 
@@ -603,9 +607,9 @@ def build_base_streamer_args(
     if config is None:
         config = load_config(config_path)
     global_cfg = get_global_config(config=config)
-    resolved_data_path = data_path or global_cfg.get("base_data_path", "")
-    resolved_base_path = base_path
-    resolved_table_name = table_name
+    resolved_data_path = data_path or global_cfg.get("base_data_path") or global_cfg.get("data_path") or "${DATA_PATH}"
+    resolved_base_path = base_path or global_cfg.get("base_path") or global_cfg.get("base_table_path") or ""
+    resolved_table_name = table_name or global_cfg.get("table_name") or global_cfg.get("base_table_name") or DEFAULT_TABLE_NAME
     return [
         "--target-base-path", resolved_base_path,
         "--target-table", resolved_table_name,
@@ -714,8 +718,8 @@ class CommandBuilder:
         self._config = config
         self._config_path = config_path
         global_cfg = get_global_config(config=config)
-        self._base_path = base_path or global_cfg.get("base_path") or ""
-        self._table_name = table_name or global_cfg.get("table_name") or DEFAULT_TABLE_NAME
+        self._base_path = base_path or global_cfg.get("base_path") or global_cfg.get("base_table_path") or ""
+        self._table_name = table_name or global_cfg.get("table_name") or global_cfg.get("base_table_name") or DEFAULT_TABLE_NAME
 
     def _get_jar_args_and_utilities_jar(self, sync_type: str) -> tuple[List[str], str]:
         base, scala, hudi_version, spark_version = _jar_base(self._config)
@@ -763,29 +767,25 @@ class CommandBuilder:
 
     def _get_standalone_main_jar(self, sync_type: str) -> str:
         base, _, hudi_version, _ = _jar_base(self._config)
-        hudi_gcp_jar = os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar")
-        hudi_aws_jar = os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar")
-        hudi_datahub_jar = os.path.join(base, f"hudi-datahub-sync-bundle-{hudi_version}.jar")
-        hudi_sync_jar = os.path.join(base, f"hudi-sync-bundle-{hudi_version}.jar")
-        if base is None:
-            if sync_type == "bigquery":
-                return hudi_gcp_jar
-            if sync_type == "glue":
-                return hudi_aws_jar
-            return hudi_sync_jar
         if sync_type == "bigquery":
-            return hudi_gcp_jar
+            return os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar")
         if sync_type == "glue":
-            return hudi_aws_jar
-        return hudi_sync_jar
+            return os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar")
+        if sync_type == "datahub":
+            return os.path.join(base, f"hudi-datahub-sync-bundle-{hudi_version}.jar")
+        return os.path.join(base, f"hudi-sync-bundle-{hudi_version}.jar")
 
     def build_inline_command(self, sync_type: str) -> List[str]:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
+        global_cfg = get_global_config(config=self._config)
+        extraclasspath_enabled = global_cfg.get("extraclasspath_enabled", False)
+        if extraclasspath_enabled:
+            jar_args.extend(["--conf", f"spark.driver.extraClassPath={utilities_jar}"])
+            jar_args.extend(["--conf", f"spark.executor.extraClassPath={utilities_jar}"])
+
         return [
-            "spark-submit", "--master", self._config.get("spark_master", "local[2]"),
+            "spark-submit", "--master", global_cfg.get("spark_master", "local[2]"),
             *jar_args,
-            "--conf", f"spark.driver.extraClassPath={utilities_jar}",
-            "--conf", f"spark.executor.extraClassPath={utilities_jar}",
             "--class", "org.apache.hudi.utilities.streamer.HoodieStreamer",
             utilities_jar,
             *build_base_streamer_args(config=self._config, base_path=self._base_path or None, table_name=self._table_name or None),
@@ -794,8 +794,9 @@ class CommandBuilder:
 
     def build_ingestion_only_command(self, sync_type: str) -> List[str]:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
+        global_cfg = get_global_config(config=self._config)
         return [
-            "spark-submit", "--master", self._config.get("spark_master", "local[2]"),
+            "spark-submit", "--master", global_cfg.get("spark_master", "local[2]"),
             *jar_args,
             "--class", "org.apache.hudi.utilities.streamer.HoodieStreamer",
             utilities_jar,
@@ -806,8 +807,9 @@ class CommandBuilder:
         tool = get_sync_tool(sync_type, config_path=self._config_path, config=self._config, base_path=self._base_path, table_name=self._table_name)
         jar_args, _ = self._get_jar_args_and_utilities_jar(sync_type)
         main_jar = self._get_standalone_main_jar(sync_type)
+        global_cfg = get_global_config(config=self._config)
         return [
-            "spark-submit", "--master", self._config.get("spark_master", "local[2]"),
+            "spark-submit", "--master", global_cfg.get("spark_master", "local[2]"),
             *jar_args,
             "--class", tool.sync_tool_class_name,
             main_jar,
@@ -913,14 +915,19 @@ def main() -> int:
         if args.mode == "inline":
             cmd = builder.build_inline_command(args.sync_type)
             print("# Inline: HoodieStreamer with sync enabled\n")
+            print("===========================================================================\n")
             print(CommandBuilder.command_to_string(cmd))
+            print("===========================================================================\n\n")
             if not args.dry_run:
-                logger.info("Executing inline command (spark-submit)")
+                spark_home = global_cfg.get("spark_home")
+                if spark_home:
+                    os.environ["SPARK_HOME"] = spark_home.strip()   
+                logger.info("Executing inline command\n\n", cmd)
                 code = subprocess.run(cmd).returncode
                 if code != 0:
                     return code
             if args.validate:
-                print("\n# Validation\n")
+                print("\n# Validation\n\n")
                 return run_validation(args.sync_type, config, base_path, table_name)
             return 0
 
@@ -928,28 +935,39 @@ def main() -> int:
             cmd1 = builder.build_ingestion_only_command(args.sync_type)
             cmd2 = builder.build_standalone_sync_command(args.sync_type)
             print("# Step 1: HoodieStreamer (no sync)\n")
+            print("===========================================================================\n")
             print(CommandBuilder.command_to_string(cmd1))
-            print("\n# Step 2: Standalone sync\n")
+            print("===========================================================================\n\n")
+            print("# Step 2: Standalone sync\n")
+            print("===========================================================================\n")
             print(CommandBuilder.command_to_string(cmd2))
+            print("===========================================================================\n\n")
             if not args.dry_run:
-                logger.info("Executing step 1: ingestion")
+                spark_home = global_cfg.get("spark_home")
+                if spark_home:
+                    os.environ["SPARK_HOME"] = spark_home.strip()
+                logger.info("Executing step 1: ingestion", cmd1)
                 r1 = subprocess.run(cmd1).returncode
                 if r1 != 0:
                     logger.error("Step 1 failed with exit code %s", r1)
                     return r1
-                logger.info("Executing step 2: standalone sync")
-                code = subprocess.run(cmd2).returncode
-                if code != 0:
-                    return code
+                logger.info("Executing step 2: standalone sync", cmd2)
+                r2 = subprocess.run(cmd2).returncode
+                if r2 != 0:
+                    logger.error("Step 2 failed with exit code %s", r2)
+                    return r2
+                return 0
             if args.validate:
-                print("\n# Validation\n")
+                print("\n# Validation\n\n")
                 return run_validation(args.sync_type, config, base_path, table_name)
             return 0
 
         # datasource
         snippet = builder.build_datasource_snippet(args.sync_type)
         print("# Datasource mode: run in pyspark/spark-shell with Hudi JARs and HoodieSparkSessionExtension\n")
+        print("===========================================================================\n")
         print(snippet)
+        print("===========================================================================\n\n")
         if not args.dry_run:
             print("# --run is not supported for datasource mode; run the snippet manually in pyspark.")
         if args.validate:
