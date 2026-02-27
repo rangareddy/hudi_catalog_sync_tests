@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -105,7 +106,13 @@ def load_config(config_path: Optional[os.PathLike] = None) -> dict[str, Any]:
 def get_global_config(config: Optional[dict] = None, config_path: Optional[os.PathLike] = None) -> dict[str, Any]:
     if config is None:
         config = load_config(config_path)
-    return config.get("global", {})
+    global_cfg = config.get("global", {})
+    global_cfg["hudi_version"] = global_cfg.get("hudi_version", "0.15.0-SNAPSHOT") 
+    global_cfg["hudi_version_str"] = re.match(r"\d+\.\d+\.\d+", global_cfg.get("hudi_version")).group().replace(".","_")
+    global_cfg["spark_major_version"] = re.match(r"\d+\.\d+", global_cfg.get("spark_version", "3.4.4")).group()
+    global_cfg["base_table_name"] = global_cfg.get("base_table_name", "stock_ticks")
+    global_cfg["base_table_path"] = global_cfg.get("base_table_path", "/tmp/hudi_catalog_sync/tables")
+    return global_cfg
 
 
 def get_sync_config(
@@ -596,9 +603,12 @@ def build_base_streamer_args(
     if config is None:
         config = load_config(config_path)
     global_cfg = get_global_config(config=config)
-    resolved_data_path = data_path or global_cfg.get("data_path") or "${DATA_PATH}"
+    resolved_data_path = data_path or global_cfg.get("base_data_path", "")
+    print("Resolved data path: ", resolved_data_path)
     resolved_base_path = base_path or global_cfg.get("base_path") or ""
+    print("Resolved base path: ", resolved_base_path)
     resolved_table_name = table_name or global_cfg.get("table_name") or DEFAULT_TABLE_NAME
+    print("Resolved table name: ", resolved_table_name)
     return [
         "--target-base-path", resolved_base_path,
         "--target-table", resolved_table_name,
@@ -669,12 +679,12 @@ def _jar_base(config: dict) -> tuple:
     g = get_global_config(config=config)
     jars_path = (g.get("jars_path") or "").rstrip("/")
     if not jars_path:
-        return None, None, g.get("hudi_version", "0.16.0-SNAPSHOT"), g.get("spark_version", "3.5")
-    spark_version = g.get("spark_version", "3.5")
+        return None, None, g.get("hudi_version", "0.16.0-SNAPSHOT"), g.get("spark_major_version", "3.4")
+    spark_major_version = g.get("spark_major_version", "3.4")
     hudi_version = g.get("hudi_version", "0.16.0-SNAPSHOT")
     scala = g.get("scala_version", "2.12")
-    base = f"{jars_path}/{hudi_version}/{spark_version}"
-    return base, scala, hudi_version, spark_version
+    base = os.path.join(jars_path, hudi_version, spark_major_version)
+    return base, scala, hudi_version, spark_major_version
 
 
 def _command_to_string(cmd: List[str]) -> str:
@@ -713,7 +723,9 @@ class CommandBuilder:
             if sync_type == "bigquery":
                 return (["--jars", "${HUDI_JARS}", "--packages", "${PACKAGES}"], "${HUDI_UTILITIES_SLIM_JAR}")
             return ["--jars", "${HUDI_JARS}"], "${HUDI_UTILITIES_SLIM_JAR}"
-        hudi_spark_jar = f"{base}/hudi-spark{spark_version}-bundle_{scala}-{hudi_version}.jar"
+        
+        spark_major_version = re.match(r"\d+\.\d+", spark_version).group()
+        hudi_spark_jar = f"{base}/hudi-spark{spark_major_version}-bundle_{scala}-{hudi_version}.jar"
         utilities_slim = f"{base}/hudi-utilities-slim-bundle_{scala}-{hudi_version}.jar"
         if sync_type == "bigquery":
             gcp_jar = f"{base}/hudi-gcp-bundle-{hudi_version}.jar"
@@ -725,11 +737,11 @@ class CommandBuilder:
                 args.extend(["--packages", packages])
             return args, utilities_slim
         if sync_type == "glue":
-            aws_jar = f"{base}/hudi-aws-bundle-{hudi_version}.jar"
-            jars = f"$S3_JARS,{hudi_spark_jar},{aws_jar}"
+            aws_jar = os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar")
+            jars = f"{hudi_spark_jar},{aws_jar}"
             return ["--jars", jars], utilities_slim
         if sync_type == "datahub":
-            datahub_jar = f"{base}/hudi-datahub-sync-bundle-{hudi_version}.jar"
+            datahub_jar = os.path.join(base, f"hudi-datahub-sync-bundle-{hudi_version}.jar")
             return ["--jars", f"{hudi_spark_jar},{datahub_jar}"], utilities_slim
         return ["--jars", hudi_spark_jar], utilities_slim
 
@@ -742,15 +754,15 @@ class CommandBuilder:
                 return "${HUDI_AWS_JAR}"
             return "${HUDI_SYNC_JAR}"
         if sync_type == "bigquery":
-            return f"{base}/hudi-gcp-bundle-{hudi_version}.jar"
+            return os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar")
         if sync_type == "glue":
-            return f"{base}/hudi-aws-bundle-{hudi_version}.jar"
+            return os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar")
         return "${HUDI_SYNC_JAR}"
 
     def build_inline_command(self, sync_type: str) -> List[str]:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
         return [
-            "spark-submit", "--master", "yarn",
+            "spark-submit", "--master", self._config.get("spark_master", "local[2]"),
             *jar_args,
             "--conf", f"spark.driver.extraClassPath={utilities_jar}",
             "--conf", f"spark.executor.extraClassPath={utilities_jar}",
@@ -763,7 +775,7 @@ class CommandBuilder:
     def build_ingestion_only_command(self, sync_type: str) -> List[str]:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
         return [
-            "spark-submit", "--master", "yarn",
+            "spark-submit", "--master", self._config.get("spark_master", "local[2]"),
             *jar_args,
             "--class", "org.apache.hudi.utilities.streamer.HoodieStreamer",
             utilities_jar,
@@ -775,7 +787,7 @@ class CommandBuilder:
         jar_args, _ = self._get_jar_args_and_utilities_jar(sync_type)
         main_jar = self._get_standalone_main_jar(sync_type)
         return [
-            "spark-submit", "--master", "yarn",
+            "spark-submit", "--master", self._config.get("spark_master", "local[2]"),
             *jar_args,
             "--class", tool.sync_tool_class_name,
             main_jar,
@@ -864,12 +876,14 @@ def main() -> int:
         return 1
 
     global_cfg = get_global_config(config=config)
-    base_table_name = global_cfg.get("base_table_name", "stock_ticks")
-    hudi_version = global_cfg.get("hudi_version", "0.16.0-SNAPSHOT")
-    base_table_path = global_cfg.get("base_table_path", "/tmp/hudi_catalog_sync/tables")
-    table_name = f"{base_table_name}_{args.sync_type}_{args.mode}_{hudi_version}_{datetime.now().strftime('%Y%m%d')}"
-    base_path = f"{base_table_path}/{table_name}"
-    builder = CommandBuilder(config=config, config_path=args.config, base_path=base_path, table_name=base_table_name)
+    base_table_path = global_cfg.get("base_table_path")
+    base_table_name = global_cfg.get('base_table_name') 
+    sync_type = args.sync_type.lower().strip()
+    mode = args.mode.lower().strip()
+    hudi_version_str = global_cfg.get("hudi_version_str")
+    table_name = f"{base_table_name}_{sync_type}_{mode}_{hudi_version_str}_{datetime.now().strftime('%Y_%m_%d')}"
+    base_path = os.path.join(base_table_path, table_name)
+    builder = CommandBuilder(config=config, config_path=args.config, base_path=base_path, table_name=table_name)
 
     try:
         if args.mode == "validate":
