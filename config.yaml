@@ -16,7 +16,7 @@
 global:
   # ---------------- Environment Variables ----------------
   spark_master: "local[4]"
-  spark_version: "3.5"
+  spark_version: "3.4.4"
   scala_version: "2.12"
   hudi_version: "0.16.0-SNAPSHOT"
 

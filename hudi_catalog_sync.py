@@ -25,6 +25,7 @@ import os
 import shlex
 import subprocess
 import sys
+from datetime import datetime
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -845,8 +846,6 @@ def main() -> int:
     parser.add_argument("--sync-type", required=True, choices=list(SYNC_TYPE_REGISTRY), help="Sync target: hive, bigquery, glue, datahub")
     parser.add_argument("--mode", required=True, choices=MODES, help="Test mode: inline, separate, datasource, validate")
     parser.add_argument("--config", default=None, help="Path to config.yaml (default: project config.yaml)")
-    parser.add_argument("--base-path", default=None, help="Override base path for table")
-    parser.add_argument("--table-name", default=None, help="Override table name")
     parser.add_argument("--run", action="store_true", help="Execute the command(s) with subprocess (default: print only)")
     parser.add_argument("--dry-run", action="store_true", default=True, help="Print command(s) only (default). Use --run to execute.")
     parser.add_argument("--validate", action="store_true", help="After running, run environment validation.")
@@ -865,13 +864,12 @@ def main() -> int:
         return 1
 
     global_cfg = get_global_config(config=config)
-    base_path: Optional[str] = args.base_path or global_cfg.get("base_path") or ""
-    table_name: Optional[str] = args.table_name or global_cfg.get("table_name") or DEFAULT_TABLE_NAME
-    if not base_path:
-        base_path = "${TABLE_BASE_PATH}"
-        logger.debug("base_path not set; using placeholder %s", base_path)
-
-    builder = CommandBuilder(config=config, config_path=args.config, base_path=base_path, table_name=table_name)
+    base_table_name = global_cfg.get("base_table_name", "stock_ticks")
+    hudi_version = global_cfg.get("hudi_version", "0.16.0-SNAPSHOT")
+    base_table_path = global_cfg.get("base_table_path", "/tmp/hudi_catalog_sync/tables")
+    table_name = f"{base_table_name}_{args.sync_type}_{args.mode}_{hudi_version}_{datetime.now().strftime('%Y%m%d')}"
+    base_path = f"{base_table_path}/{table_name}"
+    builder = CommandBuilder(config=config, config_path=args.config, base_path=base_path, table_name=base_table_name)
 
     try:
         if args.mode == "validate":
