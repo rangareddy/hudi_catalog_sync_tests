@@ -604,11 +604,8 @@ def build_base_streamer_args(
         config = load_config(config_path)
     global_cfg = get_global_config(config=config)
     resolved_data_path = data_path or global_cfg.get("base_data_path", "")
-    print("Resolved data path: ", resolved_data_path)
-    resolved_base_path = base_path or global_cfg.get("base_path") or ""
-    print("Resolved base path: ", resolved_base_path)
-    resolved_table_name = table_name or global_cfg.get("table_name") or DEFAULT_TABLE_NAME
-    print("Resolved table name: ", resolved_table_name)
+    resolved_base_path = base_path
+    resolved_table_name = table_name
     return [
         "--target-base-path", resolved_base_path,
         "--target-table", resolved_table_name,
@@ -747,17 +744,21 @@ class CommandBuilder:
 
     def _get_standalone_main_jar(self, sync_type: str) -> str:
         base, _, hudi_version, _ = _jar_base(self._config)
+        hudi_gcp_jar = os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar")
+        hudi_aws_jar = os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar")
+        hudi_datahub_jar = os.path.join(base, f"hudi-datahub-sync-bundle-{hudi_version}.jar")
+        hudi_sync_jar = os.path.join(base, f"hudi-sync-bundle-{hudi_version}.jar")
         if base is None:
             if sync_type == "bigquery":
-                return "${HUDI_GCP_BUNDLE_JAR}"
+                return hudi_gcp_jar
             if sync_type == "glue":
-                return "${HUDI_AWS_JAR}"
-            return "${HUDI_SYNC_JAR}"
+                return hudi_aws_jar
+            return hudi_sync_jar
         if sync_type == "bigquery":
-            return os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar")
+            return hudi_gcp_jar
         if sync_type == "glue":
-            return os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar")
-        return "${HUDI_SYNC_JAR}"
+            return hudi_aws_jar
+        return hudi_sync_jar
 
     def build_inline_command(self, sync_type: str) -> List[str]:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
