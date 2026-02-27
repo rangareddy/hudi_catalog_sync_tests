@@ -15,6 +15,7 @@
 # ===============================================================
 global:
   # ---------------- Environment Variables ----------------
+  spark_home: ''
   spark_master: "local[4]"
   spark_version: "3.4.4"
   scala_version: "2.12"
@@ -32,7 +33,7 @@ global:
   
   # ---------------- JARs Path Settings --------------------
   jars_path: "/tmp/hudi_catalog_sync/jars"            # Base path for Hudi JARs (e.g. gs://bucket/jars or s3a://bucket/jars)
-
+  
   # ---------------- Partition Settings ---------------- 
   partition_fields: "date"                            # Partition fields (e.g. "date")  
   partition_value_extractor: "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor" # Partition value extractor (e.g. "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor")
@@ -42,9 +43,10 @@ global:
   keygenerator_type: "SIMPLE"                         # Key generator type (e.g. "SIMPLE")
   hive_style_partitioning: true                       # Hive style partitioning (e.g. true)
   metadata_enable: true                               # Metadata enable (e.g. true)
-
+ 
   # ---------------- Extra Spark Packages Settings --------------------
-  packages: "" 
+  extraclasspath_enabled: false                       # Extra classpath enabled (e.g. true)
+  packages: ""                                        # Extra packages
 
 # ===============================================================
 # HUDI CATALOG SYNC TEST CONFIGURATION
@@ -76,6 +78,7 @@ bigquery:
   assume_date_partitioning: false                     # Assume date partitioning  
   use_bq_manifest_file: true                          # Use BQ manifest file (e.g. true)
   partition_value_extractor: "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor" # Partition value extractor (e.g. "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor")
+  extraclasspath_enabled: true
   packages: >
     com.google.cloud:google-cloud-bigquery:2.44.0,
     com.google.api-client:google-api-client:1.32.1,

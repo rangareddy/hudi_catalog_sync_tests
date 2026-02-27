@@ -39,7 +39,6 @@ import yaml
 # -----------------------------------------------------------------------------
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = _SCRIPT_DIR / "config.yaml"
-DEFAULT_TABLE_NAME = "stocks_sync_test"
 MODES = ("inline", "separate", "datasource", "validate")
 DEFAULT_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -385,11 +384,62 @@ class HiveSyncTool(AbstractSyncTool):
             args.extend(["--jdbc-url", cfg.get("jdbc_url", "jdbc:hive2://localhost:10000")])
         return args
 
+    def validate_database_table2(self, database: str, table_name: str) -> ValidationResult:
+        metastore_uris = self._merged_config.get("metastore_uris", "thrift://localhost:9083")
+        print(f"Validating database {database} and table {table_name} using metastore URIs {metastore_uris}")
+        from pyhive import hive
+        import pandas as pd
+        from thrift.transport import TSocket, TTransport
+        from thrift.protocol import TBinaryProtocol
+        from hive_metastore import ThriftHiveMetastore
+
+        host_name = metastore_uris.split("://")[1].split(":")[0]
+        host_port = metastore_uris.split("://")[1].split(":")[1]
+        print(host_name)
+        print(host_port)
+
+        transport = TSocket.TSocket(host, port)
+        transport = TTransport.TBufferedTransport(transport)
+        protocol = TBinaryProtocol.TBinaryProtocol(transport)
+        
+        client = ThriftHiveMetastore.Client(protocol)
+        transport.open()
+        tables = client.get_all_tables(database)
+        transport.close()
+        
+        if table_name in tables:
+            return ValidationResult("database_table", True, f"Table {table_name} exists")
+        return ValidationResult("database_table", False, f"Table {table_name} not found") 
+
+    def validate_database_table(self, database: str, table_name: str) -> ValidationResult:
+        spark = None
+        try:
+            from pyspark.sql import SparkSession
+            spark = SparkSession.builder \
+                .appName("QuickHiveCheck") \
+                .config("hive.metastore.uris", self._merged_config["metastore_uris"]) \
+                .config("spark.hadoop.hive.metastore.uris", self._merged_config["metastore_uris"]) \
+                .enableHiveSupport() \
+                .getOrCreate()
+            tables_df = spark.sql(f"SHOW TABLES IN {database}")
+            tables = [row.tableName for row in tables_df.collect()]
+            if table_name in tables:
+                return ValidationResult("database_table", True, f"Table {table_name} exists")
+            return ValidationResult("database_table", False, f"Table {table_name} not found") 
+        except Exception as e:
+            return ValidationResult("database_table", False, f"❌ Spark error: {e}")
+        finally:
+            if spark:
+                spark.stop()
+
     def validate_environment(self) -> List[ValidationResult]:
+        print(self._merged_config)
+        table_name = self._merged_config.get("table_name") or self._merged_config.get("table", "")
+        database_name = self._merged_config.get("database", "default")
         base_path = (self._merged_config.get("base_path") or "").strip()
         if not base_path or base_path.startswith("${"):
             return []
-        return [validate_table_path(base_path)]
+        return [validate_table_path(base_path), self.validate_database_table(database_name, table_name)]
 
 
 class BigQuerySyncTool(AbstractSyncTool):
@@ -559,11 +609,24 @@ class DataHubSyncTool(AbstractSyncTool):
             errors.append("datahub: emitter_server is required")
         return errors
 
+    def validate_database_table(self, database: str, table_name: str) -> ValidationResult:
+        logger.info(f"Validating database {database} and table {table_name}")
+        if not database or not table_name:
+            return ValidationResult("database_table", False, "database and table name required")
+        ok, err = _run_cmd(["datahub", "search", "--entity", "dataset", "--name", database])
+        if ok:
+            return ValidationResult("database_table", True, f"Dataset {database} exists")
+        return ValidationResult("database_table", False, err or "Dataset not found")
+        ok, err = _run_cmd(["datahub", "search", "--entity", "table", "--name", table_name])
+        if ok:
+            return ValidationResult("database_table", True, f"Table {table_name} exists")
+        return ValidationResult("database_table", False, err or "Table not found")
+
     def validate_environment(self) -> List[ValidationResult]:
         cfg = self._merged_config
         emitter = (cfg.get("emitter_server") or "").strip()
         database = cfg.get("database", "datahub_db")
-        table_name = cfg.get("table_name") or cfg.get("table", "")
+        table_name = cfg.get("table_name")
         base_path = (cfg.get("base_path") or "").strip()
         results: List[ValidationResult] = []
         if emitter and table_name:
@@ -609,7 +672,7 @@ def build_base_streamer_args(
     global_cfg = get_global_config(config=config)
     resolved_data_path = data_path or global_cfg.get("base_data_path") or global_cfg.get("data_path") or "${DATA_PATH}"
     resolved_base_path = base_path or global_cfg.get("base_path") or global_cfg.get("base_table_path") or ""
-    resolved_table_name = table_name or global_cfg.get("table_name") or global_cfg.get("base_table_name") or DEFAULT_TABLE_NAME
+    resolved_table_name = table_name or global_cfg.get("table_name")
     return [
         "--target-base-path", resolved_base_path,
         "--target-table", resolved_table_name,
@@ -719,7 +782,7 @@ class CommandBuilder:
         self._config_path = config_path
         global_cfg = get_global_config(config=config)
         self._base_path = base_path or global_cfg.get("base_path") or global_cfg.get("base_table_path") or ""
-        self._table_name = table_name or global_cfg.get("table_name") or global_cfg.get("base_table_name") or DEFAULT_TABLE_NAME
+        self._table_name = table_name or global_cfg.get("table_name")
 
     def _get_jar_args_and_utilities_jar(self, sync_type: str) -> tuple[List[str], str]:
         base, scala, hudi_version, spark_version = _jar_base(self._config)
@@ -820,7 +883,7 @@ class CommandBuilder:
         tool = get_sync_tool(sync_type, config_path=self._config_path, config=self._config, base_path=self._base_path, table_name=self._table_name)
         global_cfg = get_global_config(config=self._config)
         base_path = self._base_path or tool.config.get("base_path") or ""
-        table_name = self._table_name or tool.config.get("table_name") or DEFAULT_TABLE_NAME
+        table_name = self._table_name or tool.config.get("table_name")
         opts = tool.get_datasource_hoodie_options()
         opts["hoodie.table.name"] = table_name
         opts["hoodie.datasource.write.recordkey.field"] = global_cfg.get("record_key_field", "symbol")
@@ -865,7 +928,7 @@ def run_validation(sync_type: str, config: dict, base_path: Optional[str], table
         return 0
     all_pass = True
     for r in results:
-        print(r)
+        print(f"{r.check_name}: {r.success} - {r.message}")
         if not r.success:
             all_pass = False
     return 0 if all_pass else 1
@@ -887,10 +950,11 @@ def main() -> int:
     if args.run:
         args.dry_run = False
 
+    sync_type = args.sync_type.lower().strip()
+    mode = args.mode.lower().strip()
     setup_logging()
     logger = get_logger(__name__)
-    logger.info("Starting sync_type=%s mode=%s config=%s", args.sync_type, args.mode, args.config or "(default)")
-
+    logger.info("Starting sync_type=%s mode=%s config=%s", sync_type, mode, args.config or "(default)")
     try:
         config = load_config(args.config)
     except FileNotFoundError as e:
@@ -900,40 +964,43 @@ def main() -> int:
     global_cfg = get_global_config(config=config)
     base_table_path = global_cfg.get("base_table_path")
     base_table_name = global_cfg.get('base_table_name') 
-    sync_type = args.sync_type.lower().strip()
-    mode = args.mode.lower().strip()
     hudi_version_str = global_cfg.get("hudi_version_str")
     table_name = f"{base_table_name}_{sync_type}_{mode}_{hudi_version_str}_{datetime.now().strftime('%Y_%m_%d')}"
     base_path = os.path.join(base_table_path, table_name)
     builder = CommandBuilder(config=config, config_path=args.config, base_path=base_path, table_name=table_name)
-
+    logs_dir = os.path.join(_SCRIPT_DIR, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    log_file = os.path.join(logs_dir, f"{table_name}.log")
+    spark_home = global_cfg.get("spark_home")
+    if spark_home:
+        os.environ["SPARK_HOME"] = spark_home.strip()
     try:
         if args.mode == "validate":
-            print("# Validation: environment checks for sync_type=%s\n" % args.sync_type)
-            return run_validation(args.sync_type, config, base_path, table_name)
+            logger.info("# Validation: environment checks for sync_type=%s\n" % sync_type)
+            return run_validation(sync_type, config, base_path, table_name)
 
         if args.mode == "inline":
-            cmd = builder.build_inline_command(args.sync_type)
-            print("# Inline: HoodieStreamer with sync enabled\n")
-            print("===========================================================================\n")
-            print(CommandBuilder.command_to_string(cmd))
-            print("===========================================================================\n\n")
+            cmd = builder.build_inline_command(sync_type)
+            cmd_str = CommandBuilder.command_to_string(cmd)
+            print("---------------------------------------------------------------------------\n")
+            print(cmd_str)
+            print("\n---------------------------------------------------------------------------\n")
             if not args.dry_run:
-                spark_home = global_cfg.get("spark_home")
-                if spark_home:
-                    os.environ["SPARK_HOME"] = spark_home.strip()   
-                logger.info("Executing inline command\n\n", cmd)
-                code = subprocess.run(cmd).returncode
-                if code != 0:
-                    return code
+                print(f"Running the {sync_type} HoodieStreamer with sync enabled in {mode} mode...")
+                with open(log_file, "w") as f:
+                    result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
+                if result.returncode != 0:
+                    logger.error("Inline command failed with exit code %s. See %s for full output.", result.returncode, log_file)
+                    return result.returncode
+                print(f"Successfully ran the {sync_type} HoodieStreamer with sync enabled in {mode} mode")
             if args.validate:
-                print("\n# Validation\n\n")
-                return run_validation(args.sync_type, config, base_path, table_name)
+                print(f"\nValidating the {sync_type} table {table_name} in {base_path}") 
+                return run_validation(sync_type, config, base_path, table_name)
             return 0
 
         if args.mode == "separate":
-            cmd1 = builder.build_ingestion_only_command(args.sync_type)
-            cmd2 = builder.build_standalone_sync_command(args.sync_type)
+            cmd1 = builder.build_ingestion_only_command(sync_type)
+            cmd2 = builder.build_standalone_sync_command(sync_type)
             print("# Step 1: HoodieStreamer (no sync)\n")
             print("===========================================================================\n")
             print(CommandBuilder.command_to_string(cmd1))
@@ -943,27 +1010,29 @@ def main() -> int:
             print(CommandBuilder.command_to_string(cmd2))
             print("===========================================================================\n\n")
             if not args.dry_run:
-                spark_home = global_cfg.get("spark_home")
-                if spark_home:
-                    os.environ["SPARK_HOME"] = spark_home.strip()
-                logger.info("Executing step 1: ingestion", cmd1)
-                r1 = subprocess.run(cmd1).returncode
+                logger.info("Executing step 1: ingestion")
+                with open(log_file, "w") as f:
+                    r1 = subprocess.run(cmd1, stdout=f, stderr=subprocess.STDOUT).returncode
+                logger.info("spark-submit output (step 1) written to %s", log_file)
                 if r1 != 0:
-                    logger.error("Step 1 failed with exit code %s", r1)
+                    logger.error("Step 1 failed with exit code %s. See %s for full output.", r1, log_file)
                     return r1
-                logger.info("Executing step 2: standalone sync", cmd2)
-                r2 = subprocess.run(cmd2).returncode
+                logger.info("Executing step 2: standalone sync")
+                with open(log_file, "a") as f:
+                    f.write("\n\n--- Step 2: standalone sync ---\n\n")
+                    r2 = subprocess.run(cmd2, stdout=f, stderr=subprocess.STDOUT).returncode
+                logger.info("spark-submit output (step 2) appended to %s", log_file)
                 if r2 != 0:
-                    logger.error("Step 2 failed with exit code %s", r2)
+                    logger.error("Step 2 failed with exit code %s. See %s for full output.", r2, log_file)
                     return r2
                 return 0
             if args.validate:
                 print("\n# Validation\n\n")
-                return run_validation(args.sync_type, config, base_path, table_name)
+                return run_validation(sync_type, config, base_path, table_name)
             return 0
 
         # datasource
-        snippet = builder.build_datasource_snippet(args.sync_type)
+        snippet = builder.build_datasource_snippet(sync_type)
         print("# Datasource mode: run in pyspark/spark-shell with Hudi JARs and HoodieSparkSessionExtension\n")
         print("===========================================================================\n")
         print(snippet)
@@ -972,7 +1041,7 @@ def main() -> int:
             print("# --run is not supported for datasource mode; run the snippet manually in pyspark.")
         if args.validate:
             print("\n# Validation\n")
-            return run_validation(args.sync_type, config, base_path, table_name)
+            return run_validation(sync_type, config, base_path, table_name)
         return 0
 
     except (ValueError, KeyError) as e:
