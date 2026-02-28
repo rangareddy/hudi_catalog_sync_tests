@@ -48,18 +48,17 @@ global:
   extraclasspath_enabled: false                       # Extra classpath enabled (e.g. true)
   packages: ""                                        # Extra packages
 
+  # Hive Sync Settings
+  mode: "hms"                                         # Sync mode: "hms" (thrift) or "jdbc"
+  metastore_uris: "thrift://localhost:9083"           # Metastore URIs for mode=hms
+
 # ===============================================================
 # HUDI CATALOG SYNC TEST CONFIGURATION
 # ===============================================================
 hive:
   enabled: true
   sync_tool_class: "org.apache.hudi.hive.HiveSyncTool"
-  mode: "hms"                                         # Sync mode: "hms" (thrift) or "jdbc"
-  metastore_uris: "thrift://localhost:9083"           # Metastore URIs for mode=hms
-  jdbc_url: "jdbc:hive2://localhost:10000"            # JDBC URL for mode=jdbc (optional when using jdbc)
-  database: "default"                                 # Hive database name (e.g. "default")
-  partition_fields: "date"                            # Partition fields (e.g. "date")  
-  partition_value_extractor: "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor" # Partition value extractor (e.g. "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor") (e.g. "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor")                     # Schema string length threshold
+  database: "default"                                 # Hive database name (e.g. "default") # Hive base path (e.g. "/tmp/hudi_catalog_sync/tables/stock_ticks_hive_separate_0_16_0_2026_02_27")
 
 # ===============================================================
 # BIGQUERY CATALOG SYNC TEST CONFIGURATION
@@ -71,13 +70,11 @@ bigquery:
   project_id: "infra-dev-358110"                      # BigQuery project ID (e.g. "infra-dev-358110")
   dataset_name: "hudi_release_testing"                # BigQuery dataset name (e.g. "hudi_release_testing")
   dataset_location: "us-central1"                     # BigQuery dataset location
-  partition_fields: "date"                            # Partition fields
   source_uri: ""                                      # Source URI (e.g. "gs://bucket/path/table/date=*")
   source_uri_prefix: ""                               # Source URI prefix (e.g. "gs://bucket/path/table/")
   use_file_listing_from_metadata: true                # Use file listing from metadata (e.g. true)
   assume_date_partitioning: false                     # Assume date partitioning  
   use_bq_manifest_file: true                          # Use BQ manifest file (e.g. true)
-  partition_value_extractor: "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor" # Partition value extractor (e.g. "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor")
   extraclasspath_enabled: true
   packages: >
     com.google.cloud:google-cloud-bigquery:2.44.0,
@@ -91,10 +88,6 @@ glue:
   enabled: true
   sync_tool_class: "org.apache.hudi.aws.sync.AwsGlueCatalogSyncTool"
   database: "hudi_db"                                 # Glue database name (e.g. "hudi_db")
-  partition_fields: "date"                            # Partition fields (e.g. "date")
-  partition_value_extractor: "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor" # Partition value extractor (e.g. "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor")   
-  sync_mode: "jdbc"                                   # Sync mode: "jdbc" (optional when using jdbc)
-  jdbc_url: "jdbc:hive2://localhost:10000"            # JDBC URL for mode=jdbc (optional when using jdbc)
   hive_sync_database: "hudi_db"                       # Hive database name (e.g. "hudi_db")
   hive_sync_partition_fields: "date"                  # Hive partition fields (e.g. "date") 
   hive_sync_partition_extractor_class: "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor" # Hive partition value extractor (e.g. "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor")

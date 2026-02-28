@@ -379,37 +379,11 @@ class HiveSyncTool(AbstractSyncTool):
             "--partition-value-extractor",
             cfg.get("partition_value_extractor", "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor"),
             "--sync-mode", mode,
+            "--metastore-uris", cfg.get("metastore_uris", "thrift://localhost:9083")
         ]
         if mode == "jdbc":
             args.extend(["--jdbc-url", cfg.get("jdbc_url", "jdbc:hive2://localhost:10000")])
         return args
-
-    def validate_database_table2(self, database: str, table_name: str) -> ValidationResult:
-        metastore_uris = self._merged_config.get("metastore_uris", "thrift://localhost:9083")
-        print(f"Validating database {database} and table {table_name} using metastore URIs {metastore_uris}")
-        from pyhive import hive
-        import pandas as pd
-        from thrift.transport import TSocket, TTransport
-        from thrift.protocol import TBinaryProtocol
-        from hive_metastore import ThriftHiveMetastore
-
-        host_name = metastore_uris.split("://")[1].split(":")[0]
-        host_port = metastore_uris.split("://")[1].split(":")[1]
-        print(host_name)
-        print(host_port)
-
-        transport = TSocket.TSocket(host, port)
-        transport = TTransport.TBufferedTransport(transport)
-        protocol = TBinaryProtocol.TBinaryProtocol(transport)
-        
-        client = ThriftHiveMetastore.Client(protocol)
-        transport.open()
-        tables = client.get_all_tables(database)
-        transport.close()
-        
-        if table_name in tables:
-            return ValidationResult("database_table", True, f"Table {table_name} exists")
-        return ValidationResult("database_table", False, f"Table {table_name} not found") 
 
     def validate_database_table(self, database: str, table_name: str) -> ValidationResult:
         spark = None
@@ -818,25 +792,47 @@ class CommandBuilder:
             if not os.path.exists(datahub_jar):
                 get_logger(__name__).error(f"Hudi Datahub jar does not exist: {datahub_jar}")
                 raise ValueError(f"Hudi Datahub jar does not exist: {datahub_jar}")
-            return ["--jars", f"{hudi_spark_jar},{datahub_jar}"], utilities_slim
+            return ["--jars", ",".join([hudi_spark_jar, datahub_jar])], utilities_slim
         if sync_type == "hive":
             hive_jar = os.path.join(base, f"hudi-hive-sync-bundle-{hudi_version}.jar")
             if not os.path.exists(hive_jar):
                 get_logger(__name__).error(f"Hudi Hive jar does not exist: {hive_jar}")
                 raise ValueError(f"Hudi Hive jar does not exist: {hive_jar}")
-            return ["--jars", f"{hudi_spark_jar},{hive_jar}"], utilities_slim
+            return ["--jars", ",".join([hudi_spark_jar, hive_jar])], utilities_slim
         return ["--jars", hudi_spark_jar], utilities_slim
 
 
     def _get_standalone_main_jar(self, sync_type: str) -> str:
         base, _, hudi_version, _ = _jar_base(self._config)
         if sync_type == "bigquery":
-            return os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar")
+            hudi_gcp_jar = os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar")
+            if not os.path.exists(hudi_gcp_jar):
+                get_logger(__name__).error(f"Hudi GCP jar does not exist: {hudi_gcp_jar}")
+                raise ValueError(f"Hudi GCP jar does not exist: {hudi_gcp_jar}")
+            return hudi_gcp_jar
         if sync_type == "glue":
-            return os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar")
+            hudi_aws_jar = os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar")
+            if not os.path.exists(hudi_aws_jar):
+                get_logger(__name__).error(f"Hudi AWS jar does not exist: {hudi_aws_jar}")
+                raise ValueError(f"Hudi AWS jar does not exist: {hudi_aws_jar}")
+            return hudi_aws_jar
         if sync_type == "datahub":
-            return os.path.join(base, f"hudi-datahub-sync-bundle-{hudi_version}.jar")
-        return os.path.join(base, f"hudi-sync-bundle-{hudi_version}.jar")
+            hudi_datahub_jar = os.path.join(base, f"hudi-datahub-sync-bundle-{hudi_version}.jar")
+            if not os.path.exists(hudi_datahub_jar):
+                get_logger(__name__).error(f"Hudi Datahub jar does not exist: {hudi_datahub_jar}")
+                raise ValueError(f"Hudi Datahub jar does not exist: {hudi_datahub_jar}")
+            return hudi_datahub_jar
+        if sync_type == "hive":
+            hudi_hive_jar = os.path.join(base, f"hudi-hive-sync-bundle-{hudi_version}.jar")
+            if not os.path.exists(hudi_hive_jar):
+                get_logger(__name__).error(f"Hudi Hive jar does not exist: {hudi_hive_jar}")
+                raise ValueError(f"Hudi Hive jar does not exist: {hudi_hive_jar}")
+            return hudi_hive_jar
+        hudi_spark_jar = os.path.join(base, f"hudi-spark{spark_version}-bundle_{scala}-{hudi_version}.jar")
+        if not os.path.exists(hudi_spark_jar):
+            get_logger(__name__).error(f"Hudi Spark jar does not exist: {hudi_spark_jar}")
+            raise ValueError(f"Hudi Spark jar does not exist: {hudi_spark_jar}")
+        return hudi_spark_jar
 
     def build_inline_command(self, sync_type: str) -> List[str]:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
@@ -994,7 +990,7 @@ def main() -> int:
                     return result.returncode
                 print(f"Successfully ran the {sync_type} HoodieStreamer with sync enabled in {mode} mode")
             if args.validate:
-                print(f"\nValidating the {sync_type} table {table_name} in {base_path}") 
+                print(f"Validating the {sync_type} table {table_name} in {base_path}") 
                 return run_validation(sync_type, config, base_path, table_name)
             return 0
 
