@@ -26,6 +26,7 @@ import re
 import shlex
 import subprocess
 import sys
+import shutil
 from datetime import datetime
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -724,8 +725,8 @@ def _jar_base(config: dict) -> tuple:
     scala = g.get("scala_version")
     base = os.path.join(jars_path, hudi_version, spark_major_version)
     if not os.path.exists(base):
-        get_logger(__name__).error(f"Jars path does not exist: {base}")
-        raise ValueError(f"Jars path does not exist: {base}")
+        error_msg = f"Jars path does not exist: {base}"
+        raise ValueError(error_msg)
     return base, scala, hudi_version, spark_major_version
 
 def _command_to_string(cmd: List[str]) -> str:
@@ -757,82 +758,60 @@ class CommandBuilder:
         global_cfg = get_global_config(config=config)
         self._base_path = base_path or global_cfg.get("base_path") or global_cfg.get("base_table_path") or ""
         self._table_name = table_name or global_cfg.get("table_name")
+        self._all_jars_dict = None
+
+    def validate_and_get_jar(self, jar: str, msg:str) -> str:
+        if not os.path.exists(jar):
+            error_msg = f"{msg} Jar(s) do not exist: {jar}"
+            get_logger(__name__).error(error_msg)
+            raise ValueError(error_msg)
+        return jar
+
+    def get_all_jars(self) -> dict:
+        all_jars_dict = self._all_jars_dict
+        if all_jars_dict:
+            return all_jars_dict    
+        base, scala, hudi_version, spark_version = _jar_base(self._config)
+        all_jars_dict = {
+            "hudi_spark_jar": os.path.join(base, f"hudi-spark{spark_version}-bundle_{scala}-{hudi_version}.jar"),
+            "utilities_slim_jar": os.path.join(base, f"hudi-utilities-slim-bundle_{scala}-{hudi_version}.jar"),
+            "gcp_jar": os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar"),
+            "aws_jar": os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar"),
+            "datahub_jar": os.path.join(base, f"hudi-datahub-sync-bundle-{hudi_version}.jar"),
+            "hive_jar": os.path.join(base, f"hudi-hive-sync-bundle-{hudi_version}.jar"),
+        }
+        self.all_jars_dict = all_jars_dict
+        return self.all_jars_dict
 
     def _get_jar_args_and_utilities_jar(self, sync_type: str) -> tuple[List[str], str]:
-        base, scala, hudi_version, spark_version = _jar_base(self._config)
-        hudi_spark_jar = os.path.join(base, f"hudi-spark{spark_version}-bundle_{scala}-{hudi_version}.jar")
-        if not os.path.exists(hudi_spark_jar):
-            get_logger(__name__).error(f"Hudi Spark jar does not exist: {hudi_spark_jar}")
-            raise ValueError(f"Hudi Spark jar does not exist: {hudi_spark_jar}")    
-        utilities_slim = os.path.join(base, f"hudi-utilities-slim-bundle_{scala}-{hudi_version}.jar")
-        if not os.path.exists(utilities_slim):
-            get_logger(__name__).error(f"Hudi Utilities Slim jar does not exist: {utilities_slim}")
-            raise ValueError(f"Hudi Utilities Slim jar does not exist: {utilities_slim}")
+        all_jars = self.get_all_jars()
+        jars = [self.validate_and_get_jar(all_jars["hudi_spark_jar"], "Hudi Spark")]
+        packages = self._config.get("spark_packages", "")
         if sync_type == "bigquery":
-            gcp_jar = os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar")
-            if not os.path.exists(gcp_jar):
-                get_logger(__name__).error(f"Hudi GCP jar does not exist: {gcp_jar}")
-                raise ValueError(f"Hudi GCP jar does not exist: {gcp_jar}")
-            jars = f"{gcp_jar},{hudi_spark_jar}"
-            tool = get_sync_tool(sync_type, config=self._config)
-            packages = getattr(tool, "spark_packages", "") if hasattr(tool, "spark_packages") else ""
-            args: List[str] = ["--jars", jars]
-            if packages:
-                args.extend(["--packages", packages])
-            return args, utilities_slim
+            jars.append(self.validate_and_get_jar(all_jars["gcp_jar"], "Hudi GCP"))
         if sync_type == "glue":
-            aws_jar = os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar")
-            if not os.path.exists(aws_jar):
-                get_logger(__name__).error(f"Hudi AWS jar does not exist: {aws_jar}")
-                raise ValueError(f"Hudi AWS jar does not exist: {aws_jar}")
-            jars = f"{hudi_spark_jar},{aws_jar}"
-            return ["--jars", jars], utilities_slim
+            jars.append(self.validate_and_get_jar(all_jars["aws_jar"], "Hudi AWS"))
         if sync_type == "datahub":
-            datahub_jar = os.path.join(base, f"hudi-datahub-sync-bundle-{hudi_version}.jar")
-            if not os.path.exists(datahub_jar):
-                get_logger(__name__).error(f"Hudi Datahub jar does not exist: {datahub_jar}")
-                raise ValueError(f"Hudi Datahub jar does not exist: {datahub_jar}")
-            return ["--jars", ",".join([hudi_spark_jar, datahub_jar])], utilities_slim
+            jars.append(self.validate_and_get_jar(all_jars["datahub_jar"], "Hudi Datahub"))
         if sync_type == "hive":
-            hive_jar = os.path.join(base, f"hudi-hive-sync-bundle-{hudi_version}.jar")
-            if not os.path.exists(hive_jar):
-                get_logger(__name__).error(f"Hudi Hive jar does not exist: {hive_jar}")
-                raise ValueError(f"Hudi Hive jar does not exist: {hive_jar}")
-            return ["--jars", ",".join([hudi_spark_jar, hive_jar])], utilities_slim
-        return ["--jars", hudi_spark_jar], utilities_slim
+            jars.append(self.validate_and_get_jar(all_jars["hive_jar"], "Hudi Hive"))
+        args: List[str] = ["--jars", ",".join(jars)]
+        if packages:
+            args.extend(["--packages", packages])
+        return args, self.validate_and_get_jar(all_jars["utilities_slim_jar"], "Hudi Utilities Slim")
 
 
     def _get_standalone_main_jar(self, sync_type: str) -> str:
-        base, _, hudi_version, _ = _jar_base(self._config)
+        all_jars = self.get_all_jars()
         if sync_type == "bigquery":
-            hudi_gcp_jar = os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar")
-            if not os.path.exists(hudi_gcp_jar):
-                get_logger(__name__).error(f"Hudi GCP jar does not exist: {hudi_gcp_jar}")
-                raise ValueError(f"Hudi GCP jar does not exist: {hudi_gcp_jar}")
-            return hudi_gcp_jar
+            return self.validate_and_get_jar(all_jars["gcp_jar"], "Hudi GCP")   
         if sync_type == "glue":
-            hudi_aws_jar = os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar")
-            if not os.path.exists(hudi_aws_jar):
-                get_logger(__name__).error(f"Hudi AWS jar does not exist: {hudi_aws_jar}")
-                raise ValueError(f"Hudi AWS jar does not exist: {hudi_aws_jar}")
-            return hudi_aws_jar
+            return self.validate_and_get_jar(all_jars["aws_jar"], "Hudi AWS")
         if sync_type == "datahub":
-            hudi_datahub_jar = os.path.join(base, f"hudi-datahub-sync-bundle-{hudi_version}.jar")
-            if not os.path.exists(hudi_datahub_jar):
-                get_logger(__name__).error(f"Hudi Datahub jar does not exist: {hudi_datahub_jar}")
-                raise ValueError(f"Hudi Datahub jar does not exist: {hudi_datahub_jar}")
-            return hudi_datahub_jar
+            return self.validate_and_get_jar(all_jars["datahub_jar"], "Hudi Datahub")
         if sync_type == "hive":
-            hudi_hive_jar = os.path.join(base, f"hudi-hive-sync-bundle-{hudi_version}.jar")
-            if not os.path.exists(hudi_hive_jar):
-                get_logger(__name__).error(f"Hudi Hive jar does not exist: {hudi_hive_jar}")
-                raise ValueError(f"Hudi Hive jar does not exist: {hudi_hive_jar}")
-            return hudi_hive_jar
-        hudi_spark_jar = os.path.join(base, f"hudi-spark{spark_version}-bundle_{scala}-{hudi_version}.jar")
-        if not os.path.exists(hudi_spark_jar):
-            get_logger(__name__).error(f"Hudi Spark jar does not exist: {hudi_spark_jar}")
-            raise ValueError(f"Hudi Spark jar does not exist: {hudi_spark_jar}")
-        return hudi_spark_jar
+            return self.validate_and_get_jar(all_jars["hive_jar"], "Hudi Hive")
+        return self.validate_and_get_jar(all_jars["hudi_spark_jar"], "Hudi Spark")
 
     def build_inline_command(self, sync_type: str) -> List[str]:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
@@ -963,6 +942,8 @@ def main() -> int:
     hudi_version_str = global_cfg.get("hudi_version_str")
     table_name = f"{base_table_name}_{sync_type}_{mode}_{hudi_version_str}_{datetime.now().strftime('%Y_%m_%d')}"
     base_path = os.path.join(base_table_path, table_name)
+    if os.path.exists(base_path):
+        shutil.rmtree(base_path)
     builder = CommandBuilder(config=config, config_path=args.config, base_path=base_path, table_name=table_name)
     logs_dir = os.path.join(_SCRIPT_DIR, "logs")
     os.makedirs(logs_dir, exist_ok=True)
