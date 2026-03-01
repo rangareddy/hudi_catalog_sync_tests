@@ -989,19 +989,20 @@ def main() -> int:
             if not args.dry_run:
                 logger.info("Executing step 1: ingestion")
                 with open(log_file, "w") as f:
-                    r1 = subprocess.run(cmd1, stdout=f, stderr=subprocess.STDOUT).returncode
+                    f.write("\n\n--- Step 1: ingestion ---\n\n")
+                    r1 = subprocess.run(cmd1, stdout=f, stderr=subprocess.STDOUT)
                 logger.info("spark-submit output (step 1) written to %s", log_file)
-                if r1 != 0:
-                    logger.error("Step 1 failed with exit code %s. See %s for full output.", r1, log_file)
-                    return r1
+                if r1.returncode != 0:
+                    logger.error("Step 1 failed with exit code %s. See %s for full output.", r1.returncode, log_file)
+                    return r1.returncode
                 logger.info("Executing step 2: standalone sync")
                 with open(log_file, "a") as f:
                     f.write("\n\n--- Step 2: standalone sync ---\n\n")
-                    r2 = subprocess.run(cmd2, stdout=f, stderr=subprocess.STDOUT).returncode
+                    r2 = subprocess.run(cmd2, stdout=f, stderr=subprocess.STDOUT)
                 logger.info("spark-submit output (step 2) appended to %s", log_file)
-                if r2 != 0:
-                    logger.error("Step 2 failed with exit code %s. See %s for full output.", r2, log_file)
-                    return r2
+                if r2.returncode != 0:
+                    logger.error("Step 2 failed with exit code %s. See %s for full output.", r2.returncode, log_file)
+                    return r2.returncode
                 return 0
             if args.validate:
                 print("\n# Validation\n\n")
