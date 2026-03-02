@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-Hudi Catalog Sync Tests - single-file implementation.
+Hudi Catalog Sync Tests Framework.
 
-Run Hudi catalog sync tests by sync type and mode.
+Supports:
+ 1. HoodieStreamer Inline Sync
+ 2. HoodieStreamer + Standalone Sync
+ 3. Spark DataSource Sync
 
 Usage:
   python hudi_catalog_sync.py --sync-type bigquery --mode inline
@@ -41,42 +44,72 @@ import yaml
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = _SCRIPT_DIR / "config.yaml"
 MODES = ("inline", "separate", "datasource", "validate")
-DEFAULT_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-_configured_root = False
 
+# =============================================================================
+# Logging Setup
+# =============================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+
+LOGGER = logging.getLogger("hudi_catalog_sync")
+
+def log_section(title: str) -> None:
+    LOGGER.info("=" * 70)
+    LOGGER.info(title)
+    LOGGER.info("=" * 70)
+
+def log_step(message: str) -> None:
+    LOGGER.info("▶ %s", message)
+
+def log_success(message: str) -> None:
+    LOGGER.info("✅ %s", message)
+
+def log_failure(message: str) -> None:
+    LOGGER.error("❌ %s", message)
 
 # -----------------------------------------------------------------------------
-# Logging
+# Validation Model
 # -----------------------------------------------------------------------------
-def get_logger(name: str) -> logging.Logger:
-    return logging.getLogger(name)
+@dataclass(frozen=True)
+class ValidationResult:
+    check_name: str
+    success: bool
+    message: str
 
+    def __str__(self) -> str:
+        icon = "✅" if self.success else "❌"
+        return f"{icon} [{self.check_name}] {self.message}"
 
-def setup_logging(
-    level: Optional[str] = None,
-    format_string: Optional[str] = None,
-    stream: Optional[object] = None,
-    force: bool = False,
-) -> None:
-    global _configured_root
-    if _configured_root and not force:
-        return
-    level = (level or os.environ.get("LOG_LEVEL", "INFO")).upper()
-    format_string = format_string or os.environ.get("LOG_FORMAT", DEFAULT_FORMAT)
-    stream = stream or sys.stderr
-    numeric_level = getattr(logging, level, logging.INFO)
-    if not isinstance(numeric_level, int):
-        numeric_level = logging.INFO
-    handler = logging.StreamHandler(stream)
-    handler.setLevel(numeric_level)
-    handler.setFormatter(logging.Formatter(format_string, datefmt=DEFAULT_DATE_FORMAT))
-    root = logging.getLogger()
-    root.setLevel(numeric_level)
-    for h in root.handlers[:]:
-        root.removeHandler(h)
-    root.addHandler(handler)
-    _configured_root = True
+# =============================================================================
+# Command Runner
+# =============================================================================        
+def _run_cmd(cmd: List[str], timeout_seconds: int = 300) -> tuple[bool, str]:
+    LOGGER.debug("Executing:\n%s", " ".join(cmd))
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+        if result.returncode == 0:
+            return True, result.stdout.strip()
+        error = result.stderr or result.stdout
+        return False, error.strip()
+    except subprocess.TimeoutExpired:
+        return False, f"Command execution timed out after {timeout_seconds} seconds"
+    except Exception as e:
+        return False, f"Command execution failed: {str(e)}"
+
+# =============================================================================
+# Validation Utilities
+# =============================================================================
+
+def validate_path_exists(base_path: str) -> ValidationResult:
+    exists = os.path.exists(base_path.replace("file://", ""))
+    return ValidationResult(
+        "table_path",
+        exists,
+        f"Path exists → {base_path}" if exists else f"Missing path → {base_path}",
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -95,11 +128,11 @@ def _deep_merge(base: dict, override: dict) -> dict:
 def load_config(config_path: Optional[os.PathLike] = None) -> dict[str, Any]:
     path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
     if not path.is_file():
-        get_logger(__name__).error("Config file not found: %s", path)
+        LOGGER.error("Config file not found: %s", path)
         raise FileNotFoundError(f"Config file not found: {path}")
     with open(path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
-    get_logger(__name__).debug("Loaded config from %s", path)
+    LOGGER.debug("Loaded config from %s", path)
     return config
 
 
@@ -141,33 +174,6 @@ def get_sync_config(
     if not sync_cfg.get("base_path"):
         sync_cfg["base_path"] = global_cfg.get("base_path", "")
     return sync_cfg
-
-
-# -----------------------------------------------------------------------------
-# Validation
-# -----------------------------------------------------------------------------
-@dataclass(frozen=True)
-class ValidationResult:
-    check_name: str
-    success: bool
-    message: str
-
-    def __str__(self) -> str:
-        status = "PASS" if self.success else "FAIL"
-        return f"[{status}] {self.check_name}: {self.message}"
-
-
-def _run_cmd(cmd: List[str], timeout_seconds: int = 30) -> tuple[bool, str]:
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
-        if result.returncode == 0:
-            return True, ""
-        return False, (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
-    except FileNotFoundError:
-        return False, f"Command not found: {cmd[0]}"
-    except subprocess.TimeoutExpired:
-        return False, "Command timed out"
-
 
 def validate_gcs_path(path: str) -> ValidationResult:
     if not path.startswith("gs://"):
@@ -401,15 +407,15 @@ class HiveSyncTool(AbstractSyncTool):
         logs_dir = os.path.join(_SCRIPT_DIR, "logs")
         os.makedirs(logs_dir, exist_ok=True)
         log_file = os.path.join(logs_dir, f"validate_database_{sync_type}_{table_name}.log")
-        logger = get_logger(f"validate_database_{sync_type}_{table_name}")
-        logger.info(f"Validating the Table {database}.{table_name} in {log_file}")
+        log_section(f"Hive Catalog Validation for the Table {database}.{table_name}")
+        log_step(f"Validating table existence")
         with open(log_file, "w") as f:
             result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True) 
             if result.returncode != 0:
-                logger.error(f"❌ Failed to validate the Table {database}.{table_name}: {result.stderr} in {log_file}")
-                return ValidationResult("database_table", False, f"❌ Spark error: {result.stderr} in {log_file}")
-            logger.info(f"Table {database}.{table_name} exists in {log_file}")
-            return ValidationResult("database_table", True, f"Table {database}.{table_name} exists in {log_file}")
+                LOGGER.error(f"Failed to validate the Hive Catalog for the Table {database}.{table_name}: {result.stderr} in {log_file}")
+                return ValidationResult("database_table", False, f"Spark error: {result.stderr} in {log_file}")
+            LOGGER.info(f"Hive Catalog Validation Successful for the Table {database}.{table_name}")
+            return ValidationResult("database_table", True, f"Hive Catalog Validation Successful for the Table {database}.{table_name}")
 
     def validate_environment(self) -> List[ValidationResult]:
         table_name = self._merged_config.get("table_name")
@@ -588,7 +594,7 @@ class DataHubSyncTool(AbstractSyncTool):
         return errors
 
     def validate_datahub_table(self, database: str, table_name: str) -> ValidationResult:
-        logger.info(f"Validating database {database} and table {table_name}")
+        LOGGER.info(f"Validating database {database} and table {table_name}")
         if not database or not table_name:
             return ValidationResult("database_table", False, "database and table name required")
         ok, err = _run_cmd(["datahub", "search", "--entity", "dataset", "--name", database])
@@ -623,6 +629,12 @@ SYNC_TYPE_REGISTRY = {
 VALID_SYNC_TYPES = tuple(SYNC_TYPE_REGISTRY.keys())
 
 
+def print_banner():
+    log_section(
+        f"Hudi Catalog Sync Test Framework | "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    
 def get_sync_tool(
     sync_type: str,
     config_path: Optional[str] = None,
@@ -721,7 +733,7 @@ def _jar_base(config: dict) -> tuple:
     g = get_global_config(config=config)
     jars_path = (g.get("jars_path") or "").rstrip("/")
     if not jars_path:
-        get_logger(__name__).error(f"Jars path is not set in config: {config}")
+        LOGGER.error(f"Jars path is not set in config: {config}")
         raise ValueError(f"Jars path is not set in config: {config}")
     spark_major_version = g.get("spark_major_version")
     hudi_version = g.get("hudi_version")
@@ -729,7 +741,8 @@ def _jar_base(config: dict) -> tuple:
     base = os.path.join(jars_path, hudi_version, spark_major_version)
     if not os.path.exists(base):
         error_msg = f"Jars path does not exist: {base}"
-        raise ValueError(error_msg)
+        log_failure(error_msg)
+        raise RuntimeError(error_msg)
     return base, scala, hudi_version, spark_major_version
 
 def _command_to_string(cmd: List[str]) -> str:
@@ -766,8 +779,8 @@ class CommandBuilder:
     def validate_and_get_jar(self, jar: str, msg:str) -> str:
         if not os.path.exists(jar):
             error_msg = f"{msg} Jar(s) do not exist: {jar}"
-            get_logger(__name__).error(error_msg)
-            raise ValueError(error_msg)
+            LOGGER.error(error_msg)
+            raise RuntimeError(error_msg)
         return jar
 
     def get_all_jars(self) -> dict:
@@ -923,7 +936,7 @@ def run_validation(sync_type: str, config: dict, base_path: Optional[str], table
     
 
 def validate_sync(sync_type: str, mode:str, config: dict, base_path: str, table_name: str) -> int:
-    print(f"\nValidating the Hudi Catalog Sync for the {sync_type} in mode {mode}...")
+    log_section(f"Validating the Hudi Catalog Sync for the Sync Type: {sync_type} and Mode: {mode}")
     database = config.get("database")  or "default"
     results = run_validation(sync_type, config, base_path, table_name)
 
@@ -934,22 +947,83 @@ def validate_sync(sync_type: str, mode:str, config: dict, base_path: str, table_
         final_validation_status = validation_status | final_validation_status
         validation_msg = result.message
         if validation_status:
-            print(f"✅ {validation_type}: {validation_status} - {validation_msg}")
+            log_success(f"{validation_type}: {validation_status} - {validation_msg}")
         else:
-            print(f"❌ {validation_type}: {validation_status} - {validation_msg}")
+            log_failure(f"{validation_type}: {validation_status} - {validation_msg}")
     
     if final_validation_status:
-        print(f"✅ Hudi Sync Validation Successful for Sync Type: {sync_type} and Mode: {mode}")
+        log_success(f"Hudi Catalog Sync Validation Successful for Sync Type: {sync_type} and Mode: {mode}")
         return 0
     else:
-        print(f"❌ Hudi Catalog Sync Validation Failed for Sync Type: {sync_type} and Mode: {mode}")
+        log_failure(f"Hudi Catalog Sync Validation Failed for Sync Type: {sync_type} and Mode: {mode}")
         return 1
 
 def display_command(cmd: List[str], msg: str) -> None:
     cmd_str = _command_to_string(cmd)
-    logger = get_logger(__name__)
-    logger.info(f"{msg}:")
-    logger.info(f"\n\n{cmd_str}\n")
+    LOGGER.info(f"{msg}:")
+    LOGGER.info(f"\n\n{cmd_str}\n")
+
+
+# =============================================================================
+# Hoodie Streamer Sync
+# =============================================================================
+
+def run_streamer_inline(table, base_path):
+    log_section("Running Ingestion + Sync using HoodieStreamer")
+
+    cmd = [
+        "spark-submit",
+        "--class",
+        "org.apache.hudi.utilities.deltastreamer.HoodieDeltaStreamer",
+        "hudi-utilities-bundle.jar",
+        "--target-base-path",
+        base_path,
+        "--target-table",
+        table,
+        "--enable-sync",
+    ]
+
+    ok, out = run_cmd(cmd)
+
+    if not ok:
+        log_failure(out)
+        raise RuntimeError("Streamer Inline Sync Failed")
+
+    log_success("Inline ingestion + sync completed")
+
+
+# =============================================================================
+# Standalone Sync
+# =============================================================================
+
+def run_standalone_sync(database, table, base_path):
+
+    log_section("Running Standalone Sync Tool")
+
+    cmd = [
+        "spark-submit",
+        "--class",
+        "org.apache.hudi.hive.HiveSyncTool",
+        "hudi-sync-bundle.jar",
+        "--database",
+        database,
+        "--table",
+        table,
+        "--base-path",
+        base_path,
+        "--sync-mode",
+        "hms",
+        "--metastore-uris",
+        "thrift://localhost:9083",
+    ]
+
+    ok, out = run_cmd(cmd)
+
+    if not ok:
+        log_failure(out)
+        raise RuntimeError("Standalone Sync Failed")
+
+    log_success("Standalone sync completed")
 
 # -----------------------------------------------------------------------------
 # Main CLI
@@ -972,13 +1046,12 @@ def main() -> int:
 
     sync_type = args.sync_type.lower().strip()
     mode = args.mode.lower().strip()
-    setup_logging()
-    logger = get_logger(__name__)
-    logger.info("Starting sync_type=%s mode=%s config=%s", sync_type, mode, args.config or "(default)")
+    print_banner()
+    LOGGER.info("Starting sync_type=%s mode=%s config=%s", sync_type, mode, args.config or "(default)")
     try:
         config = load_config(args.config)
     except FileNotFoundError as e:
-        logger.error("Config file not found: %s", e)
+        LOGGER.error("Config file not found: %s", e)
         return 1
 
     global_cfg = get_global_config(config=config)
@@ -1004,13 +1077,16 @@ def main() -> int:
             cmd = builder.build_inline_command(sync_type)
             display_command(cmd, f"Displaying Hudi Ingestion and Catalog Sync command for the {sync_type} using HoodieStreamer.")
             if not args.dry_run:
-                logger.info(f"Running Hudi Ingestion and Catalog Sync for the {sync_type} using HoodieStreamer.")
+                log_section(f"Running Hudi Ingestion and Catalog Sync for the Sync Type: {sync_type} using HoodieStreamer.")
+                log_step("Execution Type : Inline Sync")
+                log_step("Component      : HoodieStreamer")
+                log_step("Sync Enabled   : TRUE")
                 with open(log_file, "w") as f:
                     result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if result.returncode != 0:
-                    logger.error("Inline command failed with exit code %s. See %s for full output.", result.returncode, log_file)
+                    LOGGER.error("Inline command failed with exit code %s. See %s for full output.", result.returncode, log_file)
                     return result.returncode
-                logger.info(f"Successfully ran the Hudi Ingestion and Catalog Sync for the {sync_type} using HoodieStreamer.")
+                LOGGER.info(f"Successfully ran the Hudi Ingestion and Catalog Sync for the {sync_type} using HoodieStreamer.")
             if args.validate:
                 return validate_sync(sync_type, mode, config, base_path, table_name)
             return 0
@@ -1021,24 +1097,28 @@ def main() -> int:
             display_command(cmd1, f"Displaying Hudi Ingestion using HoodieStreamer command for the {sync_type}.")
             display_command(cmd2, f"Displaying Standalone Catalog Sync using SyncTool command for the {sync_type}.")
             if not args.dry_run:
-                logger.info(f"Running Hudi Ingestion followed by Standalone Catalog Sync for the {sync_type}.")
-                logger.info(f"Step 1: Running the Hudi Ingestion using HoodieStreamer.")
+                LOGGER.info(f"Running Hudi Ingestion followed by Standalone Catalog Sync for the {sync_type}.")
+                LOGGER.info(f"Step 1: Running the Hudi Ingestion using HoodieStreamer.")
+                log_section("Running HoodieStreamer Ingestion")
+                log_step("Phase 1 : Data Ingestion")
                 with open(log_file, "w") as f:
                     f.write("\n--- Step 1: Running the Hudi Ingestion using HoodieStreamer ---\n\n")
-                    logger.info(f"Running the Hudi Ingestion using HoodieStreamer.")
+                    LOGGER.info(f"Running the Hudi Ingestion using HoodieStreamer.")
                     r1 = subprocess.run(cmd1, stdout=f, stderr=subprocess.STDOUT)
                 if r1.returncode != 0:
-                    logger.error(f"Failed to run the Hudi Ingestion using HoodieStreamer with exit code {r1.returncode}.")
+                    LOGGER.error(f"Failed to run the Hudi Ingestion using HoodieStreamer with exit code {r1.returncode}.")
                     return r1.returncode
-                logger.info(f"Successfully ran the Hudi Ingestion using HoodieStreamer.")
-                logger.info(f"Step 2: Executing the Standalone Catalog Sync job.")
+                LOGGER.info(f"Successfully ran the Hudi Ingestion using HoodieStreamer.")
+                LOGGER.info(f"Step 2: Executing the Standalone Catalog Sync job.")
+                log_section("Running Standalone Catalog Sync")
+                log_step("Phase 2 : Catalog Synchronization")
                 with open(log_file, "a") as f:
                     f.write("\n--- Step 2: Running the Sync using Standalone Catalog Sync ---\n\n")
                     r2 = subprocess.run(cmd2, stdout=f, stderr=subprocess.STDOUT)
                 if r2.returncode != 0:
-                    logger.error(f"Failed to run the Standalone Catalog Sync job with exit code {r2.returncode}.")
+                    LOGGER.error(f"Failed to run the Standalone Catalog Sync job with exit code {r2.returncode}.")
                     return r2.returncode
-                logger.info(f"Successfully ran the Standalone Catalog Sync job.")
+                LOGGER.info(f"Successfully ran the Standalone Catalog Sync job.")
             if args.validate:
                 return validate_sync(sync_type, mode, config, base_path, table_name)
             return 0
@@ -1046,20 +1126,23 @@ def main() -> int:
         cmd = builder.build_datasource_command(sync_type)
         display_command(cmd, f"Displaying Spark DataSource Write with Catalog Sync command for the Sync Type: {sync_type}")
         if not args.dry_run:
-            logger.info(f"Running the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type}")
+            log_section("Running Spark DataSource Catalog Sync")
+            log_step("Execution Type : Spark DataFrame Write")
+            log_step("Meta Sync      : Enabled")
+
+            LOGGER.info(f"Running the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type}")
             with open(log_file, "w") as f:
                 r3 = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if r3.returncode != 0:
-                    logger.error(f"Failed to run the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type} with exit code {r3.returncode}.")
+                    LOGGER.error(f"Failed to run the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type} with exit code {r3.returncode}.")
                     return r3.returncode
-                logger.info(f"Successfully ran the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type}.")
+                LOGGER.info(f"Successfully ran the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type}.")
         if args.validate:
             return validate_sync(sync_type, mode, config, base_path, table_name)
         return 0
 
     except (ValueError, KeyError) as e:
-        logger.exception("Configuration or build error: %s", e)
-        print(f"Error: {e}", file=sys.stderr)
+        LOGGER.exception("Configuration or build error: %s", e)
         return 1
 
 
