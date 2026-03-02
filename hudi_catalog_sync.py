@@ -408,7 +408,6 @@ class HiveSyncTool(AbstractSyncTool):
                 spark.stop()
 
     def validate_environment(self) -> List[ValidationResult]:
-        print(self._merged_config)
         table_name = self._merged_config.get("table_name") or self._merged_config.get("table", "")
         database_name = self._merged_config.get("database", "default")
         base_path = (self._merged_config.get("base_path") or "").strip()
@@ -800,7 +799,6 @@ class CommandBuilder:
             args.extend(["--packages", packages])
         return args, self.validate_and_get_jar(all_jars["utilities_slim_jar"], "Hudi Utilities Slim")
 
-
     def _get_standalone_main_jar(self, sync_type: str) -> str:
         all_jars = self.get_all_jars()
         if sync_type == "bigquery":
@@ -854,27 +852,18 @@ class CommandBuilder:
             *build_standalone_sync_args(sync_type, config_path=self._config_path, config=self._config, base_path=self._base_path or None, table_name=self._table_name or None),
         ]
 
-    def build_datasource_snippet(self, sync_type: str) -> str:
-        tool = get_sync_tool(sync_type, config_path=self._config_path, config=self._config, base_path=self._base_path, table_name=self._table_name)
-        global_cfg = get_global_config(config=self._config)
-        base_path = self._base_path or tool.config.get("base_path") or ""
-        table_name = self._table_name or tool.config.get("table_name")
-        opts = tool.get_datasource_hoodie_options()
-        opts["hoodie.table.name"] = table_name
-        opts["hoodie.datasource.write.recordkey.field"] = global_cfg.get("record_key_field", "symbol")
-        opts["hoodie.datasource.write.precombine.field"] = global_cfg.get("precombine_field", "ts")
-        opts["hoodie.datasource.write.partitionpath.field"] = global_cfg.get("partition_path_field", "date")
-        opts["hoodie.datasource.write.hive_style_partitioning"] = str(global_cfg.get("hive_style_partitioning", True)).lower()
-        option_lines = "\n    ".join(f'option("{k}", "{v}").\\' for k, v in opts.items() if v)
-        return f"""# Datasource mode: Spark write with {sync_type} meta sync
-# Run with: pyspark --jars $HUDI_JARS --conf spark.sql.extensions=org.apache.spark.sql.hudi.HoodieSparkSessionExtension ...
-
+    def get_spark_datasource_code(self, base_path: str, table_name: str, hudi_options: str) -> str:
+        return f"""
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import to_timestamp, col
 
-spark = SparkSession.builder.getOrCreate()
+spark = (SparkSession.builder \
+    .appName("Hudi Spark DataSource Write with Catalog Sync") \
+    .config("spark.sql.extensions", "org.apache.spark.sql.hudi.HoodieSparkSessionExtension") \
+    .config("spark.sql.catalog.hudi", "org.apache.spark.sql.hudi.catalog.HoodieCatalog") \
+    .getOrCreate())
 
-input_path = "{base_path.rstrip("/")}/input/"  # or your JSON input path
+input_path = "{base_path.rstrip("/")}/input/"
 base_path = "{base_path}"
 table_name = "{table_name}"
 
@@ -882,33 +871,76 @@ df = spark.read.json(input_path)
 df = df.withColumn("ts", to_timestamp(col("ts"), "yyyy-MM-dd HH:mm:ss"))
 
 df.write.format("hudi").\\
-    {option_lines}
+    {hudi_options}
     mode("overwrite").\\
     save(base_path)
 """
 
-    @staticmethod
-    def command_to_string(cmd: List[str]) -> str:
-        return _command_to_string(cmd)
+    def build_datasource_snippet(self, sync_type: str) -> List[str]:
+        tool = get_sync_tool(sync_type, config_path=self._config_path, config=self._config, base_path=self._base_path, table_name=self._table_name)
+        global_cfg = get_global_config(config=self._config)
+        base_path = self._base_path or tool.config.get("base_path", "")
+        table_name = self._table_name or tool.config.get("table_name")
+        opts = tool.get_datasource_hoodie_options()
+        opts["hoodie.table.name"] = table_name
+        opts["hoodie.datasource.write.recordkey.field"] = global_cfg.get("record_key_field", "symbol")
+        opts["hoodie.datasource.write.precombine.field"] = global_cfg.get("precombine_field", "ts")
+        opts["hoodie.datasource.write.partitionpath.field"] = global_cfg.get("partition_path_field", "date")
+        opts["hoodie.datasource.write.hive_style_partitioning"] = str(global_cfg.get("hive_style_partitioning", True)).lower()
+        hudi_options = "\n    ".join(f'option("{k}", "{v}").\\' for k, v in opts.items() if v)
 
+        datasource_code = self.get_spark_datasource_code(base_path, table_name, hudi_options)
+        file_name = os.path.join(base_path, f"{table_name}_app.py")
+        file_dir = os.path.dirname(file_name)   
+        os.makedirs(file_dir, exist_ok=True)
+        if os.path.exists(file_name):
+            os.remove(file_name)
+
+        with open(file_name, "w") as f:
+            f.write(datasource_code)
+
+        jar_args, _ = self._get_jar_args_and_utilities_jar(sync_type)
+        main_jar = self._get_standalone_main_jar(sync_type)
+        global_cfg = get_global_config(config=self._config)
+
+        return [
+            "spark-submit", "--master", global_cfg.get("spark_master", "local[2]"),
+            *jar_args,
+            file_name,
+        ]
+
+
+def run_validation(sync_type: str, config: dict, base_path: Optional[str], table_name: Optional[str]) -> int:
+    tool = get_sync_tool(sync_type, config=config, base_path=base_path, table_name=table_name)
+    return tool.validate_environment()
+    
+
+def validate_sync(sync_type: str, mode:str, config: dict, base_path: str, table_name: str) -> int:
+    print(f"\nValidating the Hudi Catalog Sync for the {sync_type} in mode {mode}...")
+    database = config.get("database")  or "default"
+    results = run_validation(sync_type, config, base_path, table_name)
+
+    final_validation_status = False
+    for result in results:
+        validation_type = result.check_name
+        validation_status = result.success
+        final_validation_status = validation_status | final_validation_status
+        validation_msg = result.message
+        if validation_status:
+            print(f"✅ {validation_type}: {validation_status} - {validation_msg}")
+        else:
+            print(f"❌ {validation_type}: {validation_status} - {validation_msg}")
+    
+    if final_validation_status:
+        print(f"✅ Hudi Sync Validation Successful for Sync Type: {sync_type} and Mode: {mode}")
+        return 0
+    else:
+        print(f"❌ Hudi Catalog Sync Validation Failed for Sync Type: {sync_type} and Mode: {mode}")
+        return 1
 
 # -----------------------------------------------------------------------------
 # Main CLI
 # -----------------------------------------------------------------------------
-def run_validation(sync_type: str, config: dict, base_path: Optional[str], table_name: Optional[str]) -> int:
-    tool = get_sync_tool(sync_type, config=config, base_path=base_path, table_name=table_name)
-    results = tool.validate_environment()
-    if not results:
-        print("No validation checks configured (e.g. base_path not set).")
-        return 0
-    all_pass = True
-    for r in results:
-        print(f"{r.check_name}: {r.success} - {r.message}")
-        if not r.success:
-            all_pass = False
-    return 0 if all_pass else 1
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run Hudi catalog sync tests by sync type and mode (inline, separate, datasource).",
@@ -953,8 +985,7 @@ def main() -> int:
         os.environ["SPARK_HOME"] = spark_home.strip()
     try:
         if args.mode == "validate":
-            logger.info("# Validation: environment checks for sync_type=%s\n" % sync_type)
-            return run_validation(sync_type, config, base_path, table_name)
+            return validate_sync(sync_type, mode, config, base_path, table_name)
 
         if args.mode == "inline":
             cmd = builder.build_inline_command(sync_type)
@@ -963,63 +994,63 @@ def main() -> int:
             print(cmd_str)
             print("\n---------------------------------------------------------------------------\n")
             if not args.dry_run:
-                print(f"Running the {sync_type} HoodieStreamer with sync enabled in {mode} mode...")
+                print(f"Running Hudi Ingestion and Catalog Sync for the {sync_type} using HoodieStreamer in mode {mode}.")
                 with open(log_file, "w") as f:
                     result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if result.returncode != 0:
                     logger.error("Inline command failed with exit code %s. See %s for full output.", result.returncode, log_file)
                     return result.returncode
-                print(f"Successfully ran the {sync_type} HoodieStreamer with sync enabled in {mode} mode")
+                print(f"Successfully ran the Hudi Ingestion and Catalog Sync for the {sync_type} using HoodieStreamer in mode {mode} with exit code {result.returncode}.")
             if args.validate:
-                print(f"Validating the {sync_type} table {table_name} in {base_path}") 
-                return run_validation(sync_type, config, base_path, table_name)
+                return validate_sync(sync_type, mode, config, base_path, table_name)
             return 0
 
         if args.mode == "separate":
             cmd1 = builder.build_ingestion_only_command(sync_type)
             cmd2 = builder.build_standalone_sync_command(sync_type)
-            print("# Step 1: HoodieStreamer (no sync)\n")
-            print("===========================================================================\n")
+            print("\n1 Hudi Ingestion using HoodieStreamer command:\n")
             print(CommandBuilder.command_to_string(cmd1))
-            print("===========================================================================\n\n")
-            print("# Step 2: Standalone sync\n")
-            print("===========================================================================\n")
+            print("\n2 Standalone Catalog Sync using SyncTool command:\n")
             print(CommandBuilder.command_to_string(cmd2))
-            print("===========================================================================\n\n")
+            print("\n")
             if not args.dry_run:
-                logger.info("Executing step 1: ingestion")
+                print(f"Running Hudi Ingestion followed by Standalone Catalog Sync for the {sync_type} in mode {mode}.")
+                print(f"\nStep 1: Running the Hudi Ingestion using HoodieStreamer in mode {mode}.")
                 with open(log_file, "w") as f:
-                    f.write("\n\n--- Step 1: ingestion ---\n\n")
+                    f.write("\n\n--- Step 1: Running the Hudi Ingestion using HoodieStreamer ---\n\n")
+                    print(f"Running the Hudi Ingestion using HoodieStreamer in mode {mode}.")
                     r1 = subprocess.run(cmd1, stdout=f, stderr=subprocess.STDOUT)
-                logger.info("spark-submit output (step 1) written to %s", log_file)
                 if r1.returncode != 0:
-                    logger.error("Step 1 failed with exit code %s. See %s for full output.", r1.returncode, log_file)
+                    print(f"Failed to run the Hudi Ingestion using HoodieStreamer in mode {mode} with exit code {r1.returncode}.")
                     return r1.returncode
-                logger.info("Executing step 2: standalone sync")
+                print(f"Successfully ran the Hudi Ingestion using HoodieStreamer in mode {mode} with exit code {r1.returncode}.")
+                print(f"\nStep 2: Executing the Standalone Catalog Sync job in mode {mode}.")
                 with open(log_file, "a") as f:
-                    f.write("\n\n--- Step 2: standalone sync ---\n\n")
+                    f.write("\n\n--- Step 2: Running the Sync using Standalone Catalog Sync ---\n\n")
                     r2 = subprocess.run(cmd2, stdout=f, stderr=subprocess.STDOUT)
-                logger.info("spark-submit output (step 2) appended to %s", log_file)
                 if r2.returncode != 0:
-                    logger.error("Step 2 failed with exit code %s. See %s for full output.", r2.returncode, log_file)
+                    print(f"Failed to run the Standalone Catalog Sync job in mode {mode} with exit code {r2.returncode}.")
                     return r2.returncode
-                return 0
+                print(f"Successfully ran the Standalone Catalog Sync job in mode {mode} with exit code {r2.returncode}.")
+                print("\n")
             if args.validate:
-                print("\n# Validation\n\n")
-                return run_validation(sync_type, config, base_path, table_name)
+                return validate_sync(sync_type, mode, config, base_path, table_name)
             return 0
 
-        # datasource
-        snippet = builder.build_datasource_snippet(sync_type)
-        print("# Datasource mode: run in pyspark/spark-shell with Hudi JARs and HoodieSparkSessionExtension\n")
+        cmd = builder.build_datasource_snippet(sync_type)
         print("===========================================================================\n")
-        print(snippet)
+        print(cmd)
         print("===========================================================================\n\n")
         if not args.dry_run:
-            print("# --run is not supported for datasource mode; run the snippet manually in pyspark.")
+            print(f"Running the Spark DataSource Write with Catalog Sync")
+            with open(log_file, "w") as f:
+                r3 = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
+                if r3.returncode != 0:
+                    print(f"Failed to run the Spark DataSource Write with Catalog Sync with exit code {r3.returncode}.")
+                    return r3.returncode
+                print(f"Successfully ran the Spark DataSource Write with Catalog Sync with exit code {r3.returncode}.")
         if args.validate:
-            print("\n# Validation\n")
-            return run_validation(sync_type, config, base_path, table_name)
+            return validate_sync(sync_type, mode, config, base_path, table_name)
         return 0
 
     except (ValueError, KeyError) as e:
