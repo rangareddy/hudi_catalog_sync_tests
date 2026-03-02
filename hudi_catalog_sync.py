@@ -644,8 +644,8 @@ def build_base_streamer_args(
     if config is None:
         config = load_config(config_path)
     global_cfg = get_global_config(config=config)
-    resolved_data_path = data_path or global_cfg.get("base_data_path") or global_cfg.get("data_path") or "${DATA_PATH}"
-    resolved_base_path = base_path or global_cfg.get("base_path") or global_cfg.get("base_table_path") or ""
+    resolved_data_path = data_path or global_cfg.get("base_data_path") or global_cfg.get("data_path")
+    resolved_base_path = base_path or global_cfg.get("base_path") or global_cfg.get("base_table_path")
     resolved_table_name = table_name or global_cfg.get("table_name")
     return [
         "--target-base-path", resolved_base_path,
@@ -853,17 +853,20 @@ class CommandBuilder:
         ]
 
     def get_spark_datasource_code(self, base_path: str, table_name: str, hudi_options: str) -> str:
+        global_cfg = get_global_config(config=self._config)
+        data_path = (global_cfg.get("base_data_path") or global_cfg.get("data_path")).rstrip("/")
         return f"""
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import to_timestamp, col
 
 spark = (SparkSession.builder \
     .appName("Hudi Spark DataSource Write with Catalog Sync") \
+    .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
     .config("spark.sql.extensions", "org.apache.spark.sql.hudi.HoodieSparkSessionExtension") \
     .config("spark.sql.catalog.hudi", "org.apache.spark.sql.hudi.catalog.HoodieCatalog") \
     .getOrCreate())
 
-input_path = "{base_path.rstrip("/")}/input/"
+input_path = "{data_path}/input/"
 base_path = "{base_path}"
 table_name = "{table_name}"
 
