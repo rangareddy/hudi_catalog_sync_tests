@@ -1044,15 +1044,15 @@ def main() -> int:
             return 0
 
         cmd = builder.build_datasource_command(sync_type)
-        display_command(cmd, f"Displaying Spark DataSource Write with Catalog Sync command for the {sync_type}")
+        display_command(cmd, f"Displaying Spark DataSource Write with Catalog Sync command for the Sync Type: {sync_type}")
         if not args.dry_run:
-            logger.info(f"Running the Spark DataSource Write with Catalog Sync")
+            logger.info(f"Running the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type}")
             with open(log_file, "w") as f:
                 r3 = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if r3.returncode != 0:
-                    logger.error(f"Failed to run the Spark DataSource Write with Catalog Sync with exit code {r3.returncode}.")
+                    logger.error(f"Failed to run the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type} with exit code {r3.returncode}.")
                     return r3.returncode
-                logger.info(f"Successfully ran the Spark DataSource Write with Catalog Sync.")
+                logger.info(f"Successfully ran the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type}.")
         if args.validate:
             return validate_sync(sync_type, mode, config, base_path, table_name)
         return 0
