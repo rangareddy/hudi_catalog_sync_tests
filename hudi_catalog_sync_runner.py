@@ -1047,7 +1047,9 @@ def main() -> int:
     sync_type = args.sync_type.lower().strip()
     mode = args.mode.lower().strip()
     print_banner()
-    LOGGER.info("Starting sync_type=%s mode=%s config=%s", sync_type, mode, args.config or "(default)")
+    log_step(f"Sync Type : {sync_type}")
+    log_step(f"Execution Mode : {mode}")
+
     try:
         config = load_config(args.config)
     except FileNotFoundError as e:
@@ -1097,46 +1099,37 @@ def main() -> int:
             display_command(cmd1, f"Displaying Hudi Ingestion using HoodieStreamer command for the {sync_type}.")
             display_command(cmd2, f"Displaying Standalone Catalog Sync using SyncTool command for the {sync_type}.")
             if not args.dry_run:
-                LOGGER.info(f"Running Hudi Ingestion followed by Standalone Catalog Sync for the {sync_type}.")
-                LOGGER.info(f"Step 1: Running the Hudi Ingestion using HoodieStreamer.")
-                log_section("Running HoodieStreamer Ingestion")
+                log_section("Running HoodieStreamer Ingestion and Standalone Catalog Sync")
                 log_step("Phase 1 : Data Ingestion")
                 with open(log_file, "w") as f:
-                    f.write("\n--- Step 1: Running the Hudi Ingestion using HoodieStreamer ---\n\n")
-                    LOGGER.info(f"Running the Hudi Ingestion using HoodieStreamer.")
                     r1 = subprocess.run(cmd1, stdout=f, stderr=subprocess.STDOUT)
                 if r1.returncode != 0:
                     LOGGER.error(f"Failed to run the Hudi Ingestion using HoodieStreamer with exit code {r1.returncode}.")
                     return r1.returncode
-                LOGGER.info(f"Successfully ran the Hudi Ingestion using HoodieStreamer.")
-                LOGGER.info(f"Step 2: Executing the Standalone Catalog Sync job.")
                 log_section("Running Standalone Catalog Sync")
                 log_step("Phase 2 : Catalog Synchronization")
                 with open(log_file, "a") as f:
-                    f.write("\n--- Step 2: Running the Sync using Standalone Catalog Sync ---\n\n")
                     r2 = subprocess.run(cmd2, stdout=f, stderr=subprocess.STDOUT)
                 if r2.returncode != 0:
                     LOGGER.error(f"Failed to run the Standalone Catalog Sync job with exit code {r2.returncode}.")
                     return r2.returncode
-                LOGGER.info(f"Successfully ran the Standalone Catalog Sync job.")
+                log_success("Standalone Catalog Sync completed")
             if args.validate:
                 return validate_sync(sync_type, mode, config, base_path, table_name)
             return 0
 
         cmd = builder.build_datasource_command(sync_type)
-        display_command(cmd, f"Displaying Spark DataSource Write with Catalog Sync command for the Sync Type: {sync_type}")
+        display_command(cmd, f"Displaying Spark DataSource Write with Catalog Sync command for '{sync_type}' Sync Type")
         if not args.dry_run:
             log_section("Running Spark DataSource Catalog Sync")
             log_step("Execution Type : Spark DataFrame Write")
             log_step("Meta Sync      : Enabled")
-
-            LOGGER.info(f"Running the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type}")
             with open(log_file, "w") as f:
                 r3 = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if r3.returncode != 0:
-                    LOGGER.error(f"Failed to run the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type} with exit code {r3.returncode}.")
+                    log_failure(f"Failed to run the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type} with exit code {r3.returncode}.")
                     return r3.returncode
-                LOGGER.info(f"Successfully ran the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type}.")
+                log_success("Spark DataSource Write with Catalog Sync completed")
         if args.validate:
             return validate_sync(sync_type, mode, config, base_path, table_name)
         return 0
