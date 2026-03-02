@@ -10,14 +10,15 @@ def get_spark_session(app_name: str, metastore_uris: str) -> SparkSession:
         .getOrCreate()
     return spark
 
-def validate_database_table(spark: SparkSession, database: str, table_name: str) -> bool:   
+def validate_database_table(spark: SparkSession, database: str, table_name: str) -> int:   
     tables_df = spark.sql(f"SHOW TABLES IN {database}")
     tables_list = [row.tableName for row in tables_df.collect()]  
+    db_table_name = f"{database}.{table_name}"
     if table_name in tables_list:
-        print(f"****Table {table_name} found****")
+        print(f"****Table {db_table_name} found****")
         return 0
     else:
-        print(f"****Table {table_name} not found in table list: {tables_list}****")
+        print(f"****Table {db_table_name} not found in table list: {tables_list}****")
         return 1
 
 def main() -> int:

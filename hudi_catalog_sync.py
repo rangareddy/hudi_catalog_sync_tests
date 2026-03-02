@@ -387,24 +387,29 @@ class HiveSyncTool(AbstractSyncTool):
         return args
 
     def validate_database_table(self, database: str, table_name: str) -> ValidationResult:
+        merged_conf = self._merged_config
         cmd = [
             "spark-submit",
-            "--master", "local[2]",
-            os.path.join(_SCRIPT_DIR, "validate_database.py"),
+            "--master", merged_conf.get("master", "local[2]"),
+            os.path.join(_SCRIPT_DIR, "validate_database.py")
         ]
 
         os.environ["val_database_name"] = database
         os.environ["val_table_name"] = table_name
-        os.environ["val_hive_thrift_uri"] = self._merged_config.get("metastore_uris", "thrift://localhost:9083")
-
+        os.environ["val_hive_thrift_uri"] = merged_conf.get("metastore_uris", "thrift://localhost:9083")
+        sync_type = merged_conf.get("sync_type", "hive")
         logs_dir = os.path.join(_SCRIPT_DIR, "logs")
         os.makedirs(logs_dir, exist_ok=True)
-        log_file = os.path.join(logs_dir, f"validate_database.log")
+        log_file = os.path.join(logs_dir, f"validate_database_{sync_type}_{table_name}.log")
+        logger = get_logger(f"validate_database_{sync_type}_{table_name}")
+        logger.info(f"Validating the Table {database}.{table_name} in {log_file}")
         with open(log_file, "w") as f:
             result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True) 
             if result.returncode != 0:
-                return ValidationResult("database_table", False, f"❌ Spark error: {result.stderr}")
-            return ValidationResult("database_table", True, f"Table {table_name} exists")
+                logger.error(f"❌ Failed to validate the Table {database}.{table_name}: {result.stderr} in {log_file}")
+                return ValidationResult("database_table", False, f"❌ Spark error: {result.stderr} in {log_file}")
+            logger.info(f"Table {database}.{table_name} exists in {log_file}")
+            return ValidationResult("database_table", True, f"Table {database}.{table_name} exists in {log_file}")
 
     def validate_environment(self) -> List[ValidationResult]:
         table_name = self._merged_config.get("table_name")
