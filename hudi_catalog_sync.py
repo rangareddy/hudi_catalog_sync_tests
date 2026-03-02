@@ -879,7 +879,7 @@ df.write.format("hudi").\\
     save(base_path)
 """
 
-    def build_datasource_snippet(self, sync_type: str) -> List[str]:
+    def build_datasource_command(self, sync_type: str) -> List[str]:
         tool = get_sync_tool(sync_type, config_path=self._config_path, config=self._config, base_path=self._base_path, table_name=self._table_name)
         global_cfg = get_global_config(config=self._config)
         base_path = self._base_path or tool.config.get("base_path", "")
@@ -941,6 +941,12 @@ def validate_sync(sync_type: str, mode:str, config: dict, base_path: str, table_
         print(f"❌ Hudi Catalog Sync Validation Failed for Sync Type: {sync_type} and Mode: {mode}")
         return 1
 
+def display_command(cmd: List[str], msg: str) -> None:
+    cmd_str = _command_to_string(cmd)
+    logger = get_logger(__name__)
+    logger.info(f"{msg}:")
+    logger.info(f"\n{cmd_str}\n")
+
 # -----------------------------------------------------------------------------
 # Main CLI
 # -----------------------------------------------------------------------------
@@ -992,18 +998,15 @@ def main() -> int:
 
         if args.mode == "inline":
             cmd = builder.build_inline_command(sync_type)
-            cmd_str = CommandBuilder.command_to_string(cmd)
-            print("---------------------------------------------------------------------------\n")
-            print(cmd_str)
-            print("\n---------------------------------------------------------------------------\n")
+            display_command(cmd, f"Displaying Hudi Ingestion and Catalog Sync command for the {sync_type} using HoodieStreamer.")
             if not args.dry_run:
-                print(f"Running Hudi Ingestion and Catalog Sync for the {sync_type} using HoodieStreamer in mode {mode}.")
+                logger.info(f"Running Hudi Ingestion and Catalog Sync for the {sync_type} using HoodieStreamer.")
                 with open(log_file, "w") as f:
                     result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if result.returncode != 0:
                     logger.error("Inline command failed with exit code %s. See %s for full output.", result.returncode, log_file)
                     return result.returncode
-                print(f"Successfully ran the Hudi Ingestion and Catalog Sync for the {sync_type} using HoodieStreamer in mode {mode} with exit code {result.returncode}.")
+                logger.info(f"Successfully ran the Hudi Ingestion and Catalog Sync for the {sync_type} using HoodieStreamer.")
             if args.validate:
                 return validate_sync(sync_type, mode, config, base_path, table_name)
             return 0
@@ -1011,47 +1014,41 @@ def main() -> int:
         if args.mode == "separate":
             cmd1 = builder.build_ingestion_only_command(sync_type)
             cmd2 = builder.build_standalone_sync_command(sync_type)
-            print("\n1 Hudi Ingestion using HoodieStreamer command:\n")
-            print(CommandBuilder.command_to_string(cmd1))
-            print("\n2 Standalone Catalog Sync using SyncTool command:\n")
-            print(CommandBuilder.command_to_string(cmd2))
-            print("\n")
+            display_command(cmd1, f"Displaying Hudi Ingestion using HoodieStreamer command for the {sync_type}.")
+            display_command(cmd2, f"Displaying Standalone Catalog Sync using SyncTool command for the {sync_type}.")
             if not args.dry_run:
-                print(f"Running Hudi Ingestion followed by Standalone Catalog Sync for the {sync_type} in mode {mode}.")
-                print(f"\nStep 1: Running the Hudi Ingestion using HoodieStreamer in mode {mode}.")
+                logger.info(f"Running Hudi Ingestion followed by Standalone Catalog Sync for the {sync_type}.")
+                logger.info(f"Step 1: Running the Hudi Ingestion using HoodieStreamer.")
                 with open(log_file, "w") as f:
-                    f.write("\n\n--- Step 1: Running the Hudi Ingestion using HoodieStreamer ---\n\n")
-                    print(f"Running the Hudi Ingestion using HoodieStreamer in mode {mode}.")
+                    f.write("\n--- Step 1: Running the Hudi Ingestion using HoodieStreamer ---\n\n")
+                    logger.info(f"Running the Hudi Ingestion using HoodieStreamer.")
                     r1 = subprocess.run(cmd1, stdout=f, stderr=subprocess.STDOUT)
                 if r1.returncode != 0:
-                    print(f"Failed to run the Hudi Ingestion using HoodieStreamer in mode {mode} with exit code {r1.returncode}.")
+                    logger.error(f"Failed to run the Hudi Ingestion using HoodieStreamer with exit code {r1.returncode}.")
                     return r1.returncode
-                print(f"Successfully ran the Hudi Ingestion using HoodieStreamer in mode {mode} with exit code {r1.returncode}.")
-                print(f"\nStep 2: Executing the Standalone Catalog Sync job in mode {mode}.")
+                logger.info(f"Successfully ran the Hudi Ingestion using HoodieStreamer.")
+                logger.info(f"Step 2: Executing the Standalone Catalog Sync job.")
                 with open(log_file, "a") as f:
-                    f.write("\n\n--- Step 2: Running the Sync using Standalone Catalog Sync ---\n\n")
+                    f.write("\n--- Step 2: Running the Sync using Standalone Catalog Sync ---\n\n")
                     r2 = subprocess.run(cmd2, stdout=f, stderr=subprocess.STDOUT)
                 if r2.returncode != 0:
-                    print(f"Failed to run the Standalone Catalog Sync job in mode {mode} with exit code {r2.returncode}.")
+                    logger.error(f"Failed to run the Standalone Catalog Sync job with exit code {r2.returncode}.")
                     return r2.returncode
-                print(f"Successfully ran the Standalone Catalog Sync job in mode {mode} with exit code {r2.returncode}.")
-                print("\n")
+                logger.info(f"Successfully ran the Standalone Catalog Sync job.")
             if args.validate:
                 return validate_sync(sync_type, mode, config, base_path, table_name)
             return 0
 
-        cmd = builder.build_datasource_snippet(sync_type)
-        print("===========================================================================\n")
-        print(cmd)
-        print("===========================================================================\n\n")
+        cmd = builder.build_datasource_command(sync_type)
+        display_command(cmd, f"Displaying Spark DataSource Write with Catalog Sync command for the {sync_type}")
         if not args.dry_run:
-            print(f"Running the Spark DataSource Write with Catalog Sync")
+            logger.info(f"Running the Spark DataSource Write with Catalog Sync")
             with open(log_file, "w") as f:
                 r3 = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if r3.returncode != 0:
-                    print(f"Failed to run the Spark DataSource Write with Catalog Sync with exit code {r3.returncode}.")
+                    logger.error(f"Failed to run the Spark DataSource Write with Catalog Sync with exit code {r3.returncode}.")
                     return r3.returncode
-                print(f"Successfully ran the Spark DataSource Write with Catalog Sync with exit code {r3.returncode}.")
+                logger.info(f"Successfully ran the Spark DataSource Write with Catalog Sync.")
         if args.validate:
             return validate_sync(sync_type, mode, config, base_path, table_name)
         return 0
