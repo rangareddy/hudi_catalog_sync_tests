@@ -387,30 +387,29 @@ class HiveSyncTool(AbstractSyncTool):
         return args
 
     def validate_database_table(self, database: str, table_name: str) -> ValidationResult:
-        spark = None
-        try:
-            from pyspark.sql import SparkSession
-            spark = SparkSession.builder \
-                .appName("QuickHiveCheck") \
-                .config("hive.metastore.uris", self._merged_config["metastore_uris"]) \
-                .config("spark.hadoop.hive.metastore.uris", self._merged_config["metastore_uris"]) \
-                .enableHiveSupport() \
-                .getOrCreate()
-            tables_df = spark.sql(f"SHOW TABLES IN {database}")
-            tables = [row.tableName for row in tables_df.collect()]
-            if table_name in tables:
-                return ValidationResult("database_table", True, f"Table {table_name} exists")
-            return ValidationResult("database_table", False, f"Table {table_name} not found") 
-        except Exception as e:
-            return ValidationResult("database_table", False, f"❌ Spark error: {e}")
-        finally:
-            if spark:
-                spark.stop()
+        cmd = [
+            "spark-submit",
+            "--master", "local[2]",
+            os.path.join(_SCRIPT_DIR, "validate_database.py"),
+        ]
+
+        os.environ["val_database_name"] = database
+        os.environ["val_table_name"] = table_name
+        os.environ["val_hive_thrift_uri"] = self._merged_config.get("metastore_uris", "thrift://localhost:9083")
+
+        logs_dir = os.path.join(_SCRIPT_DIR, "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        log_file = os.path.join(logs_dir, f"validate_database.log")
+        with open(log_file, "w") as f:
+            result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True) 
+            if result.returncode != 0:
+                return ValidationResult("database_table", False, f"❌ Spark error: {result.stderr}")
+            return ValidationResult("database_table", True, f"Table {table_name} exists")
 
     def validate_environment(self) -> List[ValidationResult]:
-        table_name = self._merged_config.get("table_name") or self._merged_config.get("table", "")
-        database_name = self._merged_config.get("database", "default")
-        base_path = (self._merged_config.get("base_path") or "").strip()
+        table_name = self._merged_config.get("table_name")
+        database_name = self._merged_config.get("database")
+        base_path = self._merged_config.get("base_path").strip()
         if not base_path or base_path.startswith("${"):
             return []
         return [validate_table_path(base_path), self.validate_database_table(database_name, table_name)]
@@ -474,7 +473,7 @@ class BigQuerySyncTool(AbstractSyncTool):
         cfg = self._merged_config
         project_id = cfg.get("project_id", "")
         dataset_name = cfg.get("dataset_name", "")
-        table_name = cfg.get("table_name") or cfg.get("table", "")
+        table_name = cfg.get("table_name", "")
         base_path = (cfg.get("base_path") or "").strip()
         results: List[ValidationResult] = []
         results.append(validate_bigquery_dataset(project_id, dataset_name))
@@ -535,8 +534,8 @@ class GlueSyncTool(AbstractSyncTool):
 
     def validate_environment(self) -> List[ValidationResult]:
         cfg = self._merged_config
-        database = cfg.get("database") or cfg.get("hive_sync_database", "hudi_db")
-        table_name = cfg.get("table_name") or cfg.get("table", "")
+        database = cfg.get("database")
+        table_name = cfg.get("table_name")
         base_path = (cfg.get("base_path") or "").strip()
         results: List[ValidationResult] = []
         results.append(validate_glue_database(database))
@@ -583,7 +582,7 @@ class DataHubSyncTool(AbstractSyncTool):
             errors.append("datahub: emitter_server is required")
         return errors
 
-    def validate_database_table(self, database: str, table_name: str) -> ValidationResult:
+    def validate_datahub_table(self, database: str, table_name: str) -> ValidationResult:
         logger.info(f"Validating database {database} and table {table_name}")
         if not database or not table_name:
             return ValidationResult("database_table", False, "database and table name required")
@@ -598,10 +597,10 @@ class DataHubSyncTool(AbstractSyncTool):
 
     def validate_environment(self) -> List[ValidationResult]:
         cfg = self._merged_config
-        emitter = (cfg.get("emitter_server") or "").strip()
-        database = cfg.get("database", "datahub_db")
-        table_name = cfg.get("table_name")
-        base_path = (cfg.get("base_path") or "").strip()
+        emitter = cfg.get("emitter_server").strip()
+        database = cfg.get("database").strip()
+        table_name = cfg.get("table_name").strip()
+        base_path = cfg.get("base_path").strip()
         results: List[ValidationResult] = []
         if emitter and table_name:
             results.append(validate_datahub_dataset(emitter, database, table_name))
@@ -945,7 +944,7 @@ def display_command(cmd: List[str], msg: str) -> None:
     cmd_str = _command_to_string(cmd)
     logger = get_logger(__name__)
     logger.info(f"{msg}:")
-    logger.info(f"\n{cmd_str}\n")
+    logger.info(f"\n\n{cmd_str}\n")
 
 # -----------------------------------------------------------------------------
 # Main CLI
@@ -981,7 +980,7 @@ def main() -> int:
     base_table_path = global_cfg.get("base_table_path")
     base_table_name = global_cfg.get('base_table_name') 
     hudi_version_str = global_cfg.get("hudi_version_str")
-    table_name = f"{base_table_name}_{sync_type}_{mode}_{hudi_version_str}_{datetime.now().strftime('%Y_%m_%d')}"
+    table_name = f"{base_table_name}_{sync_type}_{mode}_{hudi_version_str}"
     base_path = os.path.join(base_table_path, table_name)
     if os.path.exists(base_path):
         shutil.rmtree(base_path)

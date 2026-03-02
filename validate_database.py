@@ -1,0 +1,33 @@
+import os
+import sys
+from pyspark.sql import SparkSession
+
+def get_spark_session(app_name: str, metastore_uris: str) -> SparkSession: 
+    spark = SparkSession.builder \
+        .appName(app_name) \
+        .config("spark.hadoop.hive.metastore.uris", metastore_uris) \
+        .enableHiveSupport() \
+        .getOrCreate()
+    return spark
+
+def validate_database_table(spark: SparkSession, database: str, table_name: str) -> bool:   
+    tables_df = spark.sql(f"SHOW TABLES IN {database}")
+    tables_list = [row.tableName for row in tables_df.collect()]  
+    if table_name in tables_list:
+        print(f"****Table {table_name} found****")
+        return 0
+    else:
+        print(f"****Table {table_name} not found in table list: {tables_list}****")
+        return 1
+
+def main() -> int:
+    database = os.getenv("val_database_name", "default")
+    table_name = os.getenv("val_table_name", "stock_ticks")
+    hive_thrift_uri = os.getenv("val_hive_thrift_uri", "thrift://localhost:9083")
+    spark = get_spark_session("Hive Database Table Validation", hive_thrift_uri)
+    result = validate_database_table(spark, database, table_name) 
+    spark.stop()
+    return result
+
+if __name__ == "__main__":
+    sys.exit(main())
