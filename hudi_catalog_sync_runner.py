@@ -960,70 +960,11 @@ def validate_sync(sync_type: str, mode:str, config: dict, base_path: str, table_
 
 def display_command(cmd: List[str], msg: str) -> None:
     cmd_str = _command_to_string(cmd)
-    LOGGER.info(f"{msg}:")
-    LOGGER.info(f"\n\n{cmd_str}\n")
-
-
-# =============================================================================
-# Hoodie Streamer Sync
-# =============================================================================
-
-def run_streamer_inline(table, base_path):
-    log_section("Running Ingestion + Sync using HoodieStreamer")
-
-    cmd = [
-        "spark-submit",
-        "--class",
-        "org.apache.hudi.utilities.deltastreamer.HoodieDeltaStreamer",
-        "hudi-utilities-bundle.jar",
-        "--target-base-path",
-        base_path,
-        "--target-table",
-        table,
-        "--enable-sync",
-    ]
-
-    ok, out = run_cmd(cmd)
-
-    if not ok:
-        log_failure(out)
-        raise RuntimeError("Streamer Inline Sync Failed")
-
-    log_success("Inline ingestion + sync completed")
-
-
-# =============================================================================
-# Standalone Sync
-# =============================================================================
-
-def run_standalone_sync(database, table, base_path):
-
-    log_section("Running Standalone Sync Tool")
-
-    cmd = [
-        "spark-submit",
-        "--class",
-        "org.apache.hudi.hive.HiveSyncTool",
-        "hudi-sync-bundle.jar",
-        "--database",
-        database,
-        "--table",
-        table,
-        "--base-path",
-        base_path,
-        "--sync-mode",
-        "hms",
-        "--metastore-uris",
-        "thrift://localhost:9083",
-    ]
-
-    ok, out = run_cmd(cmd)
-
-    if not ok:
-        log_failure(out)
-        raise RuntimeError("Standalone Sync Failed")
-
-    log_success("Standalone sync completed")
+    print("_" * 75)
+    print(f"\n{msg}\n")
+    print(f"{cmd_str}\n")
+    print("_" * 75)
+    print("\n")
 
 # -----------------------------------------------------------------------------
 # Main CLI
@@ -1045,10 +986,11 @@ def main() -> int:
         args.dry_run = False
 
     sync_type = args.sync_type.lower().strip()
+    sync_type_name = SYNC_TYPE_REGISTRY.get(sync_type).__name__
     mode = args.mode.lower().strip()
     print_banner()
-    log_step(f"Sync Type : {sync_type}")
-    log_step(f"Execution Mode : {mode}")
+    log_step(f"Sync Type \t: {sync_type_name}")
+    log_step(f"Execution Mode \t: {mode}")
 
     try:
         config = load_config(args.config)
@@ -1077,18 +1019,15 @@ def main() -> int:
 
         if args.mode == "inline":
             cmd = builder.build_inline_command(sync_type)
-            display_command(cmd, f"Displaying Hudi Ingestion and Catalog Sync command for the {sync_type} using HoodieStreamer.")
+            display_command(cmd, f"Displaying Hudi Ingestion and Catalog Sync command for '{sync_type_name}' using HoodieStreamer.")
             if not args.dry_run:
-                log_section(f"Running Hudi Ingestion and Catalog Sync for the Sync Type: {sync_type} using HoodieStreamer.")
-                log_step("Execution Type : Inline Sync")
-                log_step("Component      : HoodieStreamer")
-                log_step("Sync Enabled   : TRUE")
+                log_section(f"Running Hudi Ingestion and Catalog Sync for '{sync_type_name}' using HoodieStreamer.")
                 with open(log_file, "w") as f:
                     result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if result.returncode != 0:
                     LOGGER.error("Inline command failed with exit code %s. See %s for full output.", result.returncode, log_file)
                     return result.returncode
-                LOGGER.info(f"Successfully ran the Hudi Ingestion and Catalog Sync for the {sync_type} using HoodieStreamer.")
+                LOGGER.info(f"Successfully ran the Hudi Ingestion and Catalog Sync for the {sync_type_name} using HoodieStreamer.")
             if args.validate:
                 return validate_sync(sync_type, mode, config, base_path, table_name)
             return 0
@@ -1096,8 +1035,8 @@ def main() -> int:
         if args.mode == "separate":
             cmd1 = builder.build_ingestion_only_command(sync_type)
             cmd2 = builder.build_standalone_sync_command(sync_type)
-            display_command(cmd1, f"Displaying Hudi Ingestion using HoodieStreamer command for the {sync_type}.")
-            display_command(cmd2, f"Displaying Standalone Catalog Sync using SyncTool command for the {sync_type}.")
+            display_command(cmd1, f"Displaying Hudi Ingestion using HoodieStreamer command for the {sync_type_name}.")
+            display_command(cmd2, f"Displaying Standalone Catalog Sync using SyncTool command for the {sync_type_name}.")
             if not args.dry_run:
                 log_section("Running HoodieStreamer Ingestion and Standalone Catalog Sync")
                 log_step("Phase 1 : Data Ingestion")
@@ -1119,15 +1058,13 @@ def main() -> int:
             return 0
 
         cmd = builder.build_datasource_command(sync_type)
-        display_command(cmd, f"Displaying Spark DataSource Write with Catalog Sync command for '{sync_type}' Sync Type")
+        display_command(cmd, f"Displaying Spark DataSource Write with Catalog Sync command for '{sync_type_name}'")
         if not args.dry_run:
             log_section("Running Spark DataSource Catalog Sync")
-            log_step("Execution Type : Spark DataFrame Write")
-            log_step("Meta Sync      : Enabled")
             with open(log_file, "w") as f:
                 r3 = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if r3.returncode != 0:
-                    log_failure(f"Failed to run the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type} with exit code {r3.returncode}.")
+                    log_failure(f"Failed to run the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type_name} with exit code {r3.returncode}.")
                     return r3.returncode
                 log_success("Spark DataSource Write with Catalog Sync completed")
         if args.validate:
