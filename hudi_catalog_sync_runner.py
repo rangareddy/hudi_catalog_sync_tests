@@ -377,7 +377,10 @@ def validate_datahub_dataset(
         entities = (data.get("value") or {}).get("entities") or []
         match = f"{database_name}.{table_name}"
         for e in entities:
-            if e.get("entity") == match or match in str(e.get("entity", "")):
+            entity = e.get("entity")
+            entity_platform = entity.split(",")[0].split(":")[-1]
+            entity_database_table = entity.split(",")[1]
+            if entity_platform == "hudi" and entity_database_table == match:
                 return ValidationResult(
                     "datahub_dataset",
                     True,
@@ -1429,8 +1432,6 @@ def main() -> int:
     hudi_version_str = global_cfg.get("hudi_version_str")
     table_name = f"{base_table_name}_{sync_type}_{mode}_{hudi_version_str}"
     base_path = os.path.join(base_table_path, table_name)
-    if os.path.exists(base_path):
-        shutil.rmtree(base_path)
     builder = CommandBuilder(
         config=config,
         config_path=args.config,
