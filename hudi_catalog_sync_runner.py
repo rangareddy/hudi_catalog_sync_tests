@@ -34,7 +34,7 @@ from datetime import datetime
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Final, Tuple
 
 import yaml
 
@@ -572,6 +572,7 @@ class HiveSyncTool(AbstractSyncTool):
         log_file = os.path.join(
             logs_dir, f"validate_database_{sync_type}_{table_name}.log"
         )
+        base_path = merged_conf.get("base_path", "")
         log_step(f"Validating the Sync Tests for the Hive Table {database}.{table_name} and table path {base_path}")
         with open(log_file, "w") as f:
             result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True)
