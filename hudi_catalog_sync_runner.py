@@ -1306,6 +1306,8 @@ df.write.format("hudi").\\
         )
         base_data_path = tool.config.get("base_data_path")
         file_name = os.path.join(base_data_path, f"{table_name}_app.py")
+        if file_name.startswith("file://"):
+            file_name = file_name.replace("file://", "")
         file_dir = os.path.dirname(file_name)
         os.makedirs(file_dir, exist_ok=True)
         if os.path.exists(file_name):
@@ -1470,21 +1472,17 @@ def main() -> int:
                 f"Displaying Hudi Ingestion and Catalog Sync command for '{sync_type_name}' using HoodieStreamer.",
             )
             if not args.dry_run:
-                log_section(
+                log_step(
                     f"Running Hudi Ingestion and Catalog Sync for '{sync_type_name}' using HoodieStreamer."
                 )
                 with open(log_file, "w") as f:
                     result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if result.returncode != 0:
-                    LOGGER.error(
-                        "Inline command failed with exit code %s. See %s for full output.",
-                        result.returncode,
-                        log_file,
+                    log_failure(
+                        f"Failed to run the Hudi Ingestion and Catalog Sync for the {sync_type_name} using HoodieStreamer with exit code {result.returncode}. Check the log file {log_file} for more details."
                     )
                     return result.returncode
-                LOGGER.info(
-                    f"Successfully ran the Hudi Ingestion and Catalog Sync for the {sync_type_name} using HoodieStreamer."
-                )
+                log_success("Hudi Ingestion and Catalog Sync using HoodieStreamer completed")
             if args.validate:
                 return validate_sync(sync_type, mode, config, base_path, table_name)
             return 0
@@ -1501,19 +1499,18 @@ def main() -> int:
                 f"Displaying Standalone Catalog Sync using SyncTool command for the {sync_type_name}.",
             )
             if not args.dry_run:
-                log_section(
+                log_step(
                     "Running HoodieStreamer Ingestion and Standalone Catalog Sync"
                 )
-                log_step("Phase 1 : Data Ingestion")
                 with open(log_file, "w") as f:
                     r1 = subprocess.run(cmd1, stdout=f, stderr=subprocess.STDOUT)
                 if r1.returncode != 0:
                     LOGGER.error(
-                        f"Failed to run the Hudi Ingestion using HoodieStreamer with exit code {r1.returncode}."
+                        f"Failed to run the Hudi Ingestion using HoodieStreamer with exit code {r1.returncode}. Check the log file {log_file} for more details."
                     )
                     return r1.returncode
-                log_section("Running Standalone Catalog Sync")
-                log_step("Phase 2 : Catalog Synchronization")
+                log_success("Hudi Ingestion using HoodieStreamer completed")
+                log_step("Running Standalone Catalog Sync")
                 with open(log_file, "a") as f:
                     r2 = subprocess.run(cmd2, stdout=f, stderr=subprocess.STDOUT)
                 if r2.returncode != 0:
@@ -1532,15 +1529,15 @@ def main() -> int:
             f"Displaying Spark DataSource Write with Catalog Sync command for '{sync_type_name}'",
         )
         if not args.dry_run:
-            log_section("Running Spark DataSource Catalog Sync")
+            log_step("Running Spark DataSource Catalog Sync")
             with open(log_file, "w") as f:
                 r3 = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if r3.returncode != 0:
                     log_failure(
-                        f"Failed to run the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type_name} with exit code {r3.returncode}."
+                        f"Failed to run the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type_name} with exit code {r3.returncode}. Check the log file {log_file} for more details."
                     )
                     return r3.returncode
-                log_success("Spark DataSource Write with Catalog Sync completed")
+                log_success("Spark DataSource Write with Catalog Sync using Spark DataSource completed")
         if args.validate:
             return validate_sync(sync_type, mode, config, base_path, table_name)
         return 0
