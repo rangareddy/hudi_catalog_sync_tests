@@ -56,10 +56,11 @@ logging.basicConfig(
 
 LOGGER = logging.getLogger("hudi_catalog_sync")
 
-def log_section(title: str) -> None:
-    LOGGER.info("=" * 75)
+
+def log_section(title: str, pattern: str = "=") -> None:
+    LOGGER.info(pattern * 75)
     LOGGER.info(title)
-    LOGGER.info("=" * 75)
+    LOGGER.info(pattern * 75)
 
 
 def log_step(message: str) -> None:
@@ -72,6 +73,7 @@ def log_success(message: str) -> None:
 
 def log_failure(message: str) -> None:
     LOGGER.error("❌ %s", message)
+
 
 # -----------------------------------------------------------------------------
 # Validation Model
@@ -89,13 +91,16 @@ class ValidationResult:
             return f"{icon} [{self.check_name}] [{self.validation_type}] {self.message}"
         return f"{icon} [{self.check_name}] {self.message}"
 
+
 # =============================================================================
 # Command Runner
-# =============================================================================        
+# =============================================================================
 def _run_cmd(cmd: List[str], timeout_seconds: int = 300) -> tuple[bool, str]:
     LOGGER.debug("Executing:\n%s", " ".join(cmd))
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout_seconds
+        )
         if result.returncode == 0:
             return True, result.stdout.strip()
         error = result.stderr or result.stdout
@@ -104,6 +109,7 @@ def _run_cmd(cmd: List[str], timeout_seconds: int = 300) -> tuple[bool, str]:
         return False, f"Command execution timed out after {timeout_seconds} seconds"
     except Exception as e:
         return False, f"Command execution failed: {str(e)}"
+
 
 # -----------------------------------------------------------------------------
 # Config loader
@@ -129,14 +135,18 @@ def load_config(config_path: Optional[os.PathLike] = None) -> dict[str, Any]:
     return config
 
 
-def get_global_config(config: Optional[dict] = None, config_path: Optional[os.PathLike] = None) -> dict[str, Any]:
+def get_global_config(
+    config: Optional[dict] = None, config_path: Optional[os.PathLike] = None
+) -> dict[str, Any]:
     if config is None:
         config = load_config(config_path)
     global_cfg = dict(config.get("global", {}))
     # Derived keys (use copy to avoid mutating caller's config)
     hudi_ver = global_cfg.get("hudi_version", "0.16.0-SNAPSHOT")
     match = re.match(r"(\d+\.\d+(?:\.\d+)?)", str(hudi_ver))
-    global_cfg["hudi_version_str"] = match.group(1).replace(".", "_") if match else "0_16_0"
+    global_cfg["hudi_version_str"] = (
+        match.group(1).replace(".", "_") if match else "0_16_0"
+    )
     spark_ver = global_cfg.get("spark_version", "3.4.4")
     spark_match = re.match(r"(\d+\.\d+)", str(spark_ver))
     global_cfg["spark_major_version"] = spark_match.group(1) if spark_match else "3.4"
@@ -155,122 +165,244 @@ def get_sync_config(
     global_cfg = get_global_config(config=config)
     sync_key = sync_type.lower().strip()
     if sync_key not in config:
-        raise KeyError(f"Unknown sync type: '{sync_type}'. Expected one of: hive, bigquery, glue, datahub")
+        raise KeyError(
+            f"Unknown sync type: '{sync_type}'. Expected one of: hive, bigquery, glue, datahub"
+        )
     sync_cfg = _deep_merge(global_cfg, config[sync_key])
     default_table = global_cfg.get("table_name", "")
     if not (sync_cfg.get("table_name") or sync_cfg.get("table")):
         sync_cfg["table_name"] = default_table
         sync_cfg["table"] = default_table
     else:
-        sync_cfg["table_name"] = sync_cfg.get("table_name") or sync_cfg.get("table") or default_table
-        sync_cfg["table"] = sync_cfg.get("table") or sync_cfg.get("table_name") or default_table
+        sync_cfg["table_name"] = (
+            sync_cfg.get("table_name") or sync_cfg.get("table") or default_table
+        )
+        sync_cfg["table"] = (
+            sync_cfg.get("table") or sync_cfg.get("table_name") or default_table
+        )
     if not sync_cfg.get("base_path"):
         sync_cfg["base_path"] = global_cfg.get("base_path", "")
     return sync_cfg
 
+
 def validate_gcs_path(path: str) -> ValidationResult:
     if not path.startswith("gs://"):
-        return ValidationResult("table_path", False, f"Not a GCS path: {path}", "gcs_path")
+        return ValidationResult(
+            "table_path", False, f"Not a GCS path: {path}", "gcs_path"
+        )
     path = path.rstrip("/") + "/"
     ok, err = _run_cmd(["gcloud", "storage", "ls", path])
     if ok:
         return ValidationResult("table_path", True, f"Path exists: {path}", "gcs_path")
     if "gcloud" in err and ("not found" in err.lower() or "No such object" in err):
-        return ValidationResult("table_path", False, f"Path not found: {path}", "gcs_path")
-    return ValidationResult("table_path", False, err or f"Path not accessible: {path}", "gcs_path")
+        return ValidationResult(
+            "table_path", False, f"Path not found: {path}", "gcs_path"
+        )
+    return ValidationResult(
+        "table_path", False, err or f"Path not accessible: {path}", "gcs_path"
+    )
 
 
 def validate_bigquery_dataset(project_id: str, dataset_name: str) -> ValidationResult:
     if not project_id or not dataset_name:
-        return ValidationResult("bigquery_dataset", False, "project_id and dataset_name required", "bigquery_dataset")
+        return ValidationResult(
+            "bigquery_dataset",
+            False,
+            "project_id and dataset_name required",
+            "bigquery_dataset",
+        )
     ok, err = _run_cmd(["bq", "show", "--dataset", f"{project_id}:{dataset_name}"])
     if ok:
-        return ValidationResult("bigquery_dataset", True, f"Dataset {project_id}:{dataset_name} exists", "bigquery_dataset")
-    return ValidationResult("bigquery_dataset", False, err or "Dataset not found", "bigquery_dataset")
+        return ValidationResult(
+            "bigquery_dataset",
+            True,
+            f"Dataset {project_id}:{dataset_name} exists",
+            "bigquery_dataset",
+        )
+    return ValidationResult(
+        "bigquery_dataset", False, err or "Dataset not found", "bigquery_dataset"
+    )
 
 
-def validate_bigquery_table(project_id: str, dataset_name: str, table_name: str) -> ValidationResult:
+def validate_bigquery_table(
+    project_id: str, dataset_name: str, table_name: str
+) -> ValidationResult:
     if not project_id or not dataset_name or not table_name:
-        return ValidationResult("bigquery_table", False, "project_id, dataset_name, table_name required", "bigquery_table")
+        return ValidationResult(
+            "bigquery_table",
+            False,
+            "project_id, dataset_name, table_name required",
+            "bigquery_table",
+        )
     ok, err = _run_cmd(["bq", "show", f"{project_id}:{dataset_name}.{table_name}"])
     if ok:
-        return ValidationResult("bigquery_table", True, f"Table {dataset_name}.{table_name} exists", "bigquery_table")
-    return ValidationResult("bigquery_table", False, err or "Table not found", "bigquery_table")
+        return ValidationResult(
+            "bigquery_table",
+            True,
+            f"Table {dataset_name}.{table_name} exists",
+            "bigquery_table",
+        )
+    return ValidationResult(
+        "bigquery_table", False, err or "Table not found", "bigquery_table"
+    )
 
 
 def validate_s3_path(path: str) -> ValidationResult:
     s3_path = path.replace("s3a://", "s3://", 1).rstrip("/") + "/"
     if not s3_path.startswith("s3://"):
-        return ValidationResult("table_path", False, f"Not an S3 path: {path}", "s3_path")
+        return ValidationResult(
+            "table_path", False, f"Not an S3 path: {path}", "s3_path"
+        )
     ok, err = _run_cmd(["aws", "s3", "ls", s3_path])
     if ok:
-        return ValidationResult("table_path", True, f"Path exists: {s3_path}", "s3_path")
-    return ValidationResult("table_path", False, err or f"Path not accessible: {s3_path}", "s3_path")
+        return ValidationResult(
+            "table_path", True, f"Path exists: {s3_path}", "s3_path"
+        )
+    return ValidationResult(
+        "table_path", False, err or f"Path not accessible: {s3_path}", "s3_path"
+    )
 
 
 def validate_glue_database(database_name: str) -> ValidationResult:
     if not database_name:
-        return ValidationResult("glue_database", False, "database name required", "glue_database")
+        return ValidationResult(
+            "glue_database", False, "database name required", "glue_database"
+        )
     ok, err = _run_cmd(["aws", "glue", "get-database", "--name", database_name])
     if ok:
-        return ValidationResult("glue_database", True, f"Database {database_name} exists", "glue_database")
-    return ValidationResult("glue_database", False, err or "Database not found", "glue_database")
+        return ValidationResult(
+            "glue_database", True, f"Database {database_name} exists", "glue_database"
+        )
+    return ValidationResult(
+        "glue_database", False, err or "Database not found", "glue_database"
+    )
 
 
 def validate_glue_table(database_name: str, table_name: str) -> ValidationResult:
     if not database_name or not table_name:
-        return ValidationResult("glue_table", False, "database and table name required", "glue_table")
-    ok, err = _run_cmd([
-        "aws", "glue", "get-table",
-        "--database-name", database_name,
-        "--name", table_name,
-    ])
+        return ValidationResult(
+            "glue_table", False, "database and table name required", "glue_table"
+        )
+    ok, err = _run_cmd(
+        [
+            "aws",
+            "glue",
+            "get-table",
+            "--database-name",
+            database_name,
+            "--name",
+            table_name,
+        ]
+    )
     if ok:
-        return ValidationResult("glue_table", True, f"Table {database_name}.{table_name} exists", "glue_table")
+        return ValidationResult(
+            "glue_table",
+            True,
+            f"Table {database_name}.{table_name} exists",
+            "glue_table",
+        )
     return ValidationResult("glue_table", False, err or "Table not found", "glue_table")
 
 
 def validate_local_path(path: str) -> ValidationResult:
     if not path:
         return ValidationResult("table_path", False, "path is empty", "local_path")
-    if path.startswith("gs://") or path.startswith("s3://") or path.startswith("s3a://"):
-        return ValidationResult("table_path", False, f"Not a local path: {path}", "local_path")
+    if (
+        path.startswith("gs://")
+        or path.startswith("s3://")
+        or path.startswith("s3a://")
+    ):
+        return ValidationResult(
+            "table_path", False, f"Not a local path: {path}", "local_path"
+        )
     if os.path.isdir(path):
-        return ValidationResult("table_path", True, f"Path exists: {path}", "local_path")
-    return ValidationResult("table_path", False, f"Path not found or not a directory: {path}", "local_path")
+        return ValidationResult(
+            "table_path", True, f"Path exists: {path}", "local_path"
+        )
+    return ValidationResult(
+        "table_path", False, f"Path not found or not a directory: {path}", "local_path"
+    )
 
 
-def validate_datahub_dataset(emitter_server: str, database_name: str, table_name: str) -> ValidationResult:
+def validate_datahub_dataset(
+    emitter_server: str, database_name: str, table_name: str
+) -> ValidationResult:
     if not emitter_server or not table_name:
-        return ValidationResult("datahub_dataset", False, "emitter_server and table_name required", "datahub_dataset")
+        return ValidationResult(
+            "datahub_dataset",
+            False,
+            "emitter_server and table_name required",
+            "datahub_dataset",
+        )
     search_url = f"{emitter_server.rstrip('/')}/entities?action=search"
-    payload = {"entity": "dataset", "start": 0, "count": 10, "input": f"{database_name}.{table_name}"}
+    payload = {
+        "entity": "dataset",
+        "start": 0,
+        "count": 10,
+        "input": f"{database_name}.{table_name}",
+    }
     try:
         result = subprocess.run(
-            ["curl", "-s", "-X", "POST", search_url, "-H", "Content-Type: application/json", "-d", json.dumps(payload)],
-            capture_output=True, text=True, timeout=15,
+            [
+                "curl",
+                "-s",
+                "-X",
+                "POST",
+                search_url,
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                json.dumps(payload),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if result.returncode != 0:
-            return ValidationResult("datahub_dataset", False, result.stderr or "curl failed", "datahub_dataset")
+            return ValidationResult(
+                "datahub_dataset",
+                False,
+                result.stderr or "curl failed",
+                "datahub_dataset",
+            )
         out = result.stdout
         if not out:
-            return ValidationResult("datahub_dataset", False, "Empty response from DataHub", "datahub_dataset")
+            return ValidationResult(
+                "datahub_dataset",
+                False,
+                "Empty response from DataHub",
+                "datahub_dataset",
+            )
         data = json.loads(out)
         entities = (data.get("value") or {}).get("entities") or []
         match = f"{database_name}.{table_name}"
         for e in entities:
             if e.get("entity") == match or match in str(e.get("entity", "")):
-                return ValidationResult("datahub_dataset", True, f"Dataset found in DataHub: {match}", "datahub_dataset")
-        return ValidationResult("datahub_dataset", False, f"Dataset not found in DataHub: {match}", "datahub_dataset")
+                return ValidationResult(
+                    "datahub_dataset",
+                    True,
+                    f"Dataset found in DataHub: {match}",
+                    "datahub_dataset",
+                )
+        return ValidationResult(
+            "datahub_dataset",
+            False,
+            f"Dataset not found in DataHub: {match}",
+            "datahub_dataset",
+        )
     except FileNotFoundError:
-        return ValidationResult("datahub_dataset", False, "curl not found", "datahub_dataset")
+        return ValidationResult(
+            "datahub_dataset", False, "curl not found", "datahub_dataset"
+        )
     except Exception as e:
         return ValidationResult("datahub_dataset", False, str(e), "datahub_dataset")
 
 
 def validate_table_path(base_path: str) -> ValidationResult:
     if not base_path or base_path.startswith("${"):
-        return ValidationResult("table_path", False, "base_path not set or placeholder", "table_path")
+        return ValidationResult(
+            "table_path", False, "base_path not set or placeholder", "table_path"
+        )
     if base_path.startswith("gs://"):
         return validate_gcs_path(base_path)
     if base_path.startswith("s3://") or base_path.startswith("s3a://"):
@@ -280,7 +412,9 @@ def validate_table_path(base_path: str) -> ValidationResult:
         return validate_local_path(base_path)
     ok, err = _run_cmd(["hdfs", "dfs", "-ls", base_path])
     if ok:
-        return ValidationResult("table_path", True, f"Path exists: {base_path}", "hdfs_path")
+        return ValidationResult(
+            "table_path", True, f"Path exists: {base_path}", "hdfs_path"
+        )
     return ValidationResult("table_path", False, err or "Path not found", "hdfs_path")
 
 
@@ -296,26 +430,23 @@ class AbstractSyncTool(ABC):
         config_path: Optional[str] = None,
         **overrides: Any,
     ) -> None:
-        self._merged_config = get_sync_config(self.SYNC_TYPE, config=config, config_path=config_path)
+        self._merged_config = get_sync_config(
+            self.SYNC_TYPE, config=config, config_path=config_path
+        )
         for key, value in overrides.items():
             if value is not None:
                 self._merged_config[key] = value
-
 
     @property
     def config(self) -> Dict[str, Any]:
         return self._merged_config
 
-
     @property
     @abstractmethod
-    def sync_tool_class_name(self) -> str:
-        ...
+    def sync_tool_class_name(self) -> str: ...
 
     @abstractmethod
-    def get_streamer_hoodie_conf(self) -> Dict[str, str]:
-        ...
-
+    def get_streamer_hoodie_conf(self) -> Dict[str, str]: ...
 
     def get_datasource_hoodie_options(self) -> Dict[str, str]:
         options: Dict[str, str] = {
@@ -325,25 +456,22 @@ class AbstractSyncTool(ABC):
         options.update(self.get_streamer_hoodie_conf())
         return options
 
-
     @abstractmethod
-    def get_standalone_tool_args(self) -> List[str]:
-        ...
-
+    def get_standalone_tool_args(self) -> List[str]: ...
 
     def validate_config(self) -> List[str]:
         errors: List[str] = []
         if not self._merged_config.get("base_path"):
             errors.append(f"{self.SYNC_TYPE}: base_path is required")
-        table = self._merged_config.get("table_name") or self._merged_config.get("table")
+        table = self._merged_config.get("table_name") or self._merged_config.get(
+            "table"
+        )
         if not table:
             errors.append(f"{self.SYNC_TYPE}: table_name or table is required")
         return errors
 
-
     def validate_environment(self) -> list:
         return []
-
 
     def is_enabled(self) -> bool:
         return bool(self._merged_config.get("enabled", True))
@@ -354,8 +482,9 @@ class HiveSyncTool(AbstractSyncTool):
 
     @property
     def sync_tool_class_name(self) -> str:
-        return self._merged_config.get("sync_tool_class", "org.apache.hudi.hive.HiveSyncTool")
-
+        return self._merged_config.get(
+            "sync_tool_class", "org.apache.hudi.hive.HiveSyncTool"
+        )
 
     def get_streamer_hoodie_conf(self) -> Dict[str, str]:
         cfg = self._merged_config
@@ -375,56 +504,92 @@ class HiveSyncTool(AbstractSyncTool):
             "hoodie.datasource.hive_sync.mode": mode,
         }
         if mode == "hms":
-            conf["hoodie.datasource.hive_sync.metastore.uris"] = cfg.get("metastore_uris", "thrift://localhost:9083")
+            conf["hoodie.datasource.hive_sync.metastore.uris"] = cfg.get(
+                "metastore_uris", "thrift://localhost:9083"
+            )
         else:
-            conf["hoodie.datasource.hive_sync.jdbcurl"] = cfg.get("jdbc_url", "jdbc:hive2://localhost:10000")
+            conf["hoodie.datasource.hive_sync.jdbcurl"] = cfg.get(
+                "jdbc_url", "jdbc:hive2://localhost:10000"
+            )
         if cfg.get("schema_string_length_thresh") is not None:
-            conf["hoodie.datasource.hive_sync.schema_string_length_thresh"] = str(cfg["schema_string_length_thresh"])
+            conf["hoodie.datasource.hive_sync.schema_string_length_thresh"] = str(
+                cfg["schema_string_length_thresh"]
+            )
         return conf
-
 
     def get_standalone_tool_args(self) -> List[str]:
         cfg = self._merged_config
         mode = cfg.get("mode", "jdbc")
         args: List[str] = [
-            "--database", cfg.get("database", "default"),
-            "--table", cfg.get("table_name") or cfg.get("table", ""),
-            "--base-path", cfg.get("base_path", ""),
-            "--partitioned-by", cfg.get("partition_fields", "date"),
+            "--database",
+            cfg.get("database", "default"),
+            "--table",
+            cfg.get("table_name") or cfg.get("table", ""),
+            "--base-path",
+            cfg.get("base_path", ""),
+            "--partitioned-by",
+            cfg.get("partition_fields", "date"),
             "--partition-value-extractor",
-            cfg.get("partition_value_extractor", "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor"),
-            "--sync-mode", mode,
-            "--metastore-uris", cfg.get("metastore_uris", "thrift://localhost:9083")
+            cfg.get(
+                "partition_value_extractor",
+                "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor",
+            ),
+            "--sync-mode",
+            mode,
+            "--metastore-uris",
+            cfg.get("metastore_uris", "thrift://localhost:9083"),
         ]
         if mode == "jdbc":
-            args.extend(["--jdbc-url", cfg.get("jdbc_url", "jdbc:hive2://localhost:10000")])
+            args.extend(
+                ["--jdbc-url", cfg.get("jdbc_url", "jdbc:hive2://localhost:10000")]
+            )
         return args
 
-
-    def validate_database_table(self, database: str, table_name: str) -> ValidationResult:
+    def validate_database_table(
+        self, database: str, table_name: str
+    ) -> ValidationResult:
         merged_conf = self._merged_config
         cmd = [
             "spark-submit",
-            "--master", merged_conf.get("master", "local[2]"),
-            os.path.join(_SCRIPT_DIR, "validate_database.py")
+            "--master",
+            merged_conf.get("master", "local[2]"),
+            os.path.join(_SCRIPT_DIR, "validate_database.py"),
         ]
 
         os.environ["val_database_name"] = database
         os.environ["val_table_name"] = table_name
-        os.environ["val_hive_thrift_uri"] = merged_conf.get("metastore_uris", "thrift://localhost:9083")
+        os.environ["val_hive_thrift_uri"] = merged_conf.get(
+            "metastore_uris", "thrift://localhost:9083"
+        )
         sync_type = merged_conf.get("sync_type", "hive")
         logs_dir = os.path.join(_SCRIPT_DIR, "logs")
         os.makedirs(logs_dir, exist_ok=True)
-        log_file = os.path.join(logs_dir, f"validate_database_{sync_type}_{table_name}.log")
-        log_section(f"Hive Catalog Validation for the Table {database}.{table_name}")
+        log_file = os.path.join(
+            logs_dir, f"validate_database_{sync_type}_{table_name}.log"
+        )
+        log_section(f"Hive Catalog Validation for the Table {database}.{table_name}", "_")
         log_step(f"Validating table existence")
         with open(log_file, "w") as f:
-            result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True) 
+            result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True)
             if result.returncode != 0:
-                LOGGER.error(f"Failed to validate the Hive Catalog for the Table {database}.{table_name}: {result.stderr} in {log_file}")
-                return ValidationResult("database_table", False, f"Spark error: {result.stderr} in {log_file}", "hive_catalog")
-            LOGGER.info(f"Hive Catalog Validation Successful for the Table {database}.{table_name}")
-            return ValidationResult("database_table", True, f"Hive Catalog Validation Successful for the Table {database}.{table_name}", "hive_catalog")
+                LOGGER.error(
+                    f"Failed to validate the Hive Catalog for the Table {database}.{table_name}: {result.stderr} in {log_file}"
+                )
+                return ValidationResult(
+                    "database_table",
+                    False,
+                    f"Spark error: {result.stderr} in {log_file}",
+                    "hive_catalog",
+                )
+            LOGGER.info(
+                f"Hive Catalog Validation Successful for the Table {database}.{table_name}"
+            )
+            return ValidationResult(
+                "database_table",
+                True,
+                f"Hive Catalog Validation Successful for the Table {database}.{table_name}",
+                "hive_catalog",
+            )
 
     def validate_environment(self) -> List[ValidationResult]:
         table_name = self._merged_config.get("table_name")
@@ -432,7 +597,10 @@ class HiveSyncTool(AbstractSyncTool):
         base_path = self._merged_config.get("base_path").strip()
         if not base_path or base_path.startswith("${"):
             return []
-        return [validate_table_path(base_path), self.validate_database_table(database_name, table_name)]
+        return [
+            validate_table_path(base_path),
+            self.validate_database_table(database_name, table_name),
+        ]
 
 
 class BigQuerySyncTool(AbstractSyncTool):
@@ -440,49 +608,77 @@ class BigQuerySyncTool(AbstractSyncTool):
 
     @property
     def sync_tool_class_name(self) -> str:
-        return self._merged_config.get("sync_tool_class", "org.apache.hudi.gcp.bigquery.BigQuerySyncTool")
-
+        return self._merged_config.get(
+            "sync_tool_class", "org.apache.hudi.gcp.bigquery.BigQuerySyncTool"
+        )
 
     def get_streamer_hoodie_conf(self) -> Dict[str, str]:
         cfg = self._merged_config
         base_path = (cfg.get("base_path") or "").rstrip("/")
         table = cfg.get("table_name") or cfg.get("table", "")
-        source_uri = cfg.get("source_uri") or (f"{base_path}/date=*" if base_path else "")
-        source_uri_prefix = cfg.get("source_uri_prefix") or (f"{base_path}/" if base_path else "")
+        source_uri = cfg.get("source_uri") or (
+            f"{base_path}/date=*" if base_path else ""
+        )
+        source_uri_prefix = cfg.get("source_uri_prefix") or (
+            f"{base_path}/" if base_path else ""
+        )
         return {
             "hoodie.gcp.bigquery.sync.project_id": cfg.get("project_id", ""),
             "hoodie.gcp.bigquery.sync.dataset_name": cfg.get("dataset_name", ""),
-            "hoodie.gcp.bigquery.sync.dataset_location": cfg.get("dataset_location", "us-central1"),
+            "hoodie.gcp.bigquery.sync.dataset_location": cfg.get(
+                "dataset_location", "us-central1"
+            ),
             "hoodie.gcp.bigquery.sync.table_name": table,
             "hoodie.gcp.bigquery.sync.base_path": cfg.get("base_path", ""),
-            "hoodie.gcp.bigquery.sync.partition_fields": cfg.get("partition_fields", "date"),
+            "hoodie.gcp.bigquery.sync.partition_fields": cfg.get(
+                "partition_fields", "date"
+            ),
             "hoodie.gcp.bigquery.sync.source_uri": source_uri,
             "hoodie.gcp.bigquery.sync.source_uri_prefix": source_uri_prefix,
-            "hoodie.gcp.bigquery.sync.use_file_listing_from_metadata": str(cfg.get("use_file_listing_from_metadata", True)).lower(),
-            "hoodie.gcp.bigquery.sync.assume_date_partitioning": str(cfg.get("assume_date_partitioning", False)).lower(),
-            "hoodie.gcp.bigquery.sync.use_bq_manifest_file": str(cfg.get("use_bq_manifest_file", True)).lower(),
+            "hoodie.gcp.bigquery.sync.use_file_listing_from_metadata": str(
+                cfg.get("use_file_listing_from_metadata", True)
+            ).lower(),
+            "hoodie.gcp.bigquery.sync.assume_date_partitioning": str(
+                cfg.get("assume_date_partitioning", False)
+            ).lower(),
+            "hoodie.gcp.bigquery.sync.use_bq_manifest_file": str(
+                cfg.get("use_bq_manifest_file", True)
+            ).lower(),
         }
-
 
     def get_standalone_tool_args(self) -> List[str]:
         cfg = self._merged_config
         base_path = (cfg.get("base_path") or "").rstrip("/")
-        source_uri = cfg.get("source_uri") or (f"{base_path}/date=*" if base_path else "")
-        source_uri_prefix = cfg.get("source_uri_prefix") or (f"{base_path}/" if base_path else "")
+        source_uri = cfg.get("source_uri") or (
+            f"{base_path}/date=*" if base_path else ""
+        )
+        source_uri_prefix = cfg.get("source_uri_prefix") or (
+            f"{base_path}/" if base_path else ""
+        )
         return [
-            "--project-id", cfg.get("project_id", ""),
-            "--dataset-name", cfg.get("dataset_name", ""),
-            "--dataset-location", cfg.get("dataset_location", "us-central1"),
-            "--table", cfg.get("table_name") or cfg.get("table", ""),
-            "--base-path", cfg.get("base_path", ""),
-            "--partitioned-by", cfg.get("partition_fields", "date"),
+            "--project-id",
+            cfg.get("project_id", ""),
+            "--dataset-name",
+            cfg.get("dataset_name", ""),
+            "--dataset-location",
+            cfg.get("dataset_location", "us-central1"),
+            "--table",
+            cfg.get("table_name") or cfg.get("table", ""),
+            "--base-path",
+            cfg.get("base_path", ""),
+            "--partitioned-by",
+            cfg.get("partition_fields", "date"),
             "--partition-value-extractor",
-            cfg.get("partition_value_extractor", "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor"),
-            "--source-uri", source_uri,
-            "--source-uri-prefix", source_uri_prefix,
+            cfg.get(
+                "partition_value_extractor",
+                "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor",
+            ),
+            "--source-uri",
+            source_uri,
+            "--source-uri-prefix",
+            source_uri_prefix,
             "--use-file-listing-from-metadata",
         ]
-
 
     def validate_config(self) -> List[str]:
         errors = super().validate_config()
@@ -491,7 +687,6 @@ class BigQuerySyncTool(AbstractSyncTool):
         if not self._merged_config.get("dataset_name"):
             errors.append("bigquery: dataset_name is required")
         return errors
-
 
     def validate_environment(self) -> List[ValidationResult]:
         cfg = self._merged_config
@@ -506,7 +701,6 @@ class BigQuerySyncTool(AbstractSyncTool):
             results.append(validate_table_path(base_path))
         return results
 
-
     @property
     def spark_packages(self) -> str:
         return self._merged_config.get(
@@ -520,46 +714,64 @@ class GlueSyncTool(AbstractSyncTool):
 
     @property
     def sync_tool_class_name(self) -> str:
-        return self._merged_config.get("sync_tool_class", "org.apache.hudi.aws.sync.AwsGlueCatalogSyncTool")
-
+        return self._merged_config.get(
+            "sync_tool_class", "org.apache.hudi.aws.sync.AwsGlueCatalogSyncTool"
+        )
 
     def get_streamer_hoodie_conf(self) -> Dict[str, str]:
         cfg = self._merged_config
         database = cfg.get("database") or cfg.get("hive_sync_database", "hudi_db")
-        table = cfg.get("table_name") or cfg.get("table") or cfg.get("hive_sync_table", "")
+        table = (
+            cfg.get("table_name") or cfg.get("table") or cfg.get("hive_sync_table", "")
+        )
         return {
-            "hoodie.datasource.meta_sync.condition.sync": str(cfg.get("meta_sync_condition_sync", True)).lower(),
+            "hoodie.datasource.meta_sync.condition.sync": str(
+                cfg.get("meta_sync_condition_sync", True)
+            ).lower(),
             "hoodie.datasource.hive_sync.mode": cfg.get("sync_mode", "jdbc"),
-            "hoodie.datasource.hive_sync.jdbcurl": cfg.get("jdbc_url", "jdbc:hive2://localhost:10000"),
+            "hoodie.datasource.hive_sync.jdbcurl": cfg.get(
+                "jdbc_url", "jdbc:hive2://localhost:10000"
+            ),
             "hoodie.datasource.hive_sync.database": database,
             "hoodie.datasource.hive_sync.table": table,
-            "hoodie.datasource.hive_sync.partition_fields": cfg.get("partition_fields", "date"),
+            "hoodie.datasource.hive_sync.partition_fields": cfg.get(
+                "partition_fields", "date"
+            ),
             "hoodie.datasource.hive_sync.partition_extractor_class": cfg.get(
-                "partition_value_extractor", "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor"
+                "partition_value_extractor",
+                "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor",
             ),
         }
-
 
     def get_standalone_tool_args(self) -> List[str]:
         cfg = self._merged_config
         return [
-            "--database", cfg.get("database", "hudi_db"),
-            "--table", cfg.get("table_name") or cfg.get("table", ""),
-            "--base-path", cfg.get("base_path", ""),
-            "--partitioned-by", cfg.get("partition_fields", "date"),
+            "--database",
+            cfg.get("database", "hudi_db"),
+            "--table",
+            cfg.get("table_name") or cfg.get("table", ""),
+            "--base-path",
+            cfg.get("base_path", ""),
+            "--partitioned-by",
+            cfg.get("partition_fields", "date"),
             "--partition-value-extractor",
-            cfg.get("partition_value_extractor", "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor"),
-            "--sync-mode", cfg.get("sync_mode", "jdbc"),
-            "--jdbc-url", cfg.get("jdbc_url", "jdbc:hive2://localhost:10000"),
+            cfg.get(
+                "partition_value_extractor",
+                "org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor",
+            ),
+            "--sync-mode",
+            cfg.get("sync_mode", "jdbc"),
+            "--jdbc-url",
+            cfg.get("jdbc_url", "jdbc:hive2://localhost:10000"),
         ]
-
 
     def validate_config(self) -> List[str]:
         errors = super().validate_config()
-        if not self._merged_config.get("database") and not self._merged_config.get("hive_sync_database"):
+        if not self._merged_config.get("database") and not self._merged_config.get(
+            "hive_sync_database"
+        ):
             errors.append("glue: database or hive_sync_database is required")
         return errors
-
 
     def validate_environment(self) -> List[ValidationResult]:
         cfg = self._merged_config
@@ -579,32 +791,43 @@ class DataHubSyncTool(AbstractSyncTool):
 
     @property
     def sync_tool_class_name(self) -> str:
-        return self._merged_config.get("sync_tool_class", "org.apache.hudi.sync.datahub.DataHubSyncTool")
-
+        return self._merged_config.get(
+            "sync_tool_class", "org.apache.hudi.sync.datahub.DataHubSyncTool"
+        )
 
     def get_streamer_hoodie_conf(self) -> Dict[str, str]:
         cfg = self._merged_config
         conf: Dict[str, str] = {
-            "hoodie.meta.sync.datahub.emitter.server": cfg.get("emitter_server", "http://localhost:8080"),
+            "hoodie.meta.sync.datahub.emitter.server": cfg.get(
+                "emitter_server", "http://localhost:8080"
+            ),
             "hoodie.datasource.hive_sync.database": cfg.get("database", "datahub_db"),
-            "hoodie.datasource.hive_sync.table": cfg.get("table_name") or cfg.get("table", ""),
+            "hoodie.datasource.hive_sync.table": cfg.get("table_name")
+            or cfg.get("table", ""),
         }
         if cfg.get("schema_string_length_thresh") is not None:
-            conf["hoodie.datasource.hive_sync.schema_string_length_thresh"] = str(cfg["schema_string_length_thresh"])
+            conf["hoodie.datasource.hive_sync.schema_string_length_thresh"] = str(
+                cfg["schema_string_length_thresh"]
+            )
         if cfg.get("table_properties"):
             conf["hoodie.meta.sync.datahub.table.properties"] = cfg["table_properties"]
         if cfg.get("emit_log_metrics") is not None:
-            conf["hoodie.meta.sync.datahub.emit.log.metrics"] = str(cfg["emit_log_metrics"]).lower()
+            conf["hoodie.meta.sync.datahub.emit.log.metrics"] = str(
+                cfg["emit_log_metrics"]
+            ).lower()
         return conf
-
 
     def get_standalone_tool_args(self) -> List[str]:
         cfg = self._merged_config
         return [
-            "--emitter-server", cfg.get("emitter_server", "http://localhost:8080"),
-            "--database", cfg.get("database", "datahub_db"),
-            "--table", cfg.get("table_name") or cfg.get("table", ""),
-            "--base-path", cfg.get("base_path", ""),
+            "--emitter-server",
+            cfg.get("emitter_server", "http://localhost:8080"),
+            "--database",
+            cfg.get("database", "datahub_db"),
+            "--table",
+            cfg.get("table_name") or cfg.get("table", ""),
+            "--base-path",
+            cfg.get("base_path", ""),
         ]
 
     def validate_config(self) -> List[str]:
@@ -613,20 +836,30 @@ class DataHubSyncTool(AbstractSyncTool):
             errors.append("datahub: emitter_server is required")
         return errors
 
-
-    def validate_datahub_table(self, database: str, table_name: str) -> ValidationResult:
+    def validate_datahub_table(
+        self, database: str, table_name: str
+    ) -> ValidationResult:
         LOGGER.info(f"Validating database {database} and table {table_name}")
         if not database or not table_name:
-            return ValidationResult("database_table", False, "database and table name required")
-        ok, err = _run_cmd(["datahub", "search", "--entity", "dataset", "--name", database])
+            return ValidationResult(
+                "database_table", False, "database and table name required"
+            )
+        ok, err = _run_cmd(
+            ["datahub", "search", "--entity", "dataset", "--name", database]
+        )
         if ok:
-            return ValidationResult("database_table", True, f"Dataset {database} exists")
+            return ValidationResult(
+                "database_table", True, f"Dataset {database} exists"
+            )
         return ValidationResult("database_table", False, err or "Dataset not found")
-        ok, err = _run_cmd(["datahub", "search", "--entity", "table", "--name", table_name])
+        ok, err = _run_cmd(
+            ["datahub", "search", "--entity", "table", "--name", table_name]
+        )
         if ok:
-            return ValidationResult("database_table", True, f"Table {table_name} exists")
+            return ValidationResult(
+                "database_table", True, f"Table {table_name} exists"
+            )
         return ValidationResult("database_table", False, err or "Table not found")
-
 
     def validate_environment(self) -> List[ValidationResult]:
         cfg = self._merged_config
@@ -652,10 +885,10 @@ VALID_SYNC_TYPES = tuple(SYNC_TYPE_REGISTRY.keys())
 
 
 def print_banner():
-    log_section(
+    log_section( 
         f"Hudi Catalog Sync Test Framework | "
         f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
+    , "*")
 
 
 def get_sync_tool(
@@ -666,8 +899,12 @@ def get_sync_tool(
 ) -> AbstractSyncTool:
     sync_type = sync_type.lower().strip()
     if sync_type not in SYNC_TYPE_REGISTRY:
-        raise ValueError(f"Unknown sync_type: {sync_type}. Valid types: {list(SYNC_TYPE_REGISTRY)}")
-    return SYNC_TYPE_REGISTRY[sync_type](config_path=config_path, config=config, **overrides)
+        raise ValueError(
+            f"Unknown sync_type: {sync_type}. Valid types: {list(SYNC_TYPE_REGISTRY)}"
+        )
+    return SYNC_TYPE_REGISTRY[sync_type](
+        config_path=config_path, config=config, **overrides
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -683,29 +920,52 @@ def build_base_streamer_args(
     if config is None:
         config = load_config(config_path)
     global_cfg = get_global_config(config=config)
-    resolved_data_path = data_path or global_cfg.get("base_data_path") or global_cfg.get("data_path")
-    resolved_base_path = base_path or global_cfg.get("base_path") or global_cfg.get("base_table_path")
+    resolved_data_path = (
+        data_path or global_cfg.get("base_data_path") or global_cfg.get("data_path")
+    )
+    resolved_base_path = (
+        base_path or global_cfg.get("base_path") or global_cfg.get("base_table_path")
+    )
     resolved_table_name = table_name or global_cfg.get("table_name")
     return [
-        "--target-base-path", resolved_base_path,
-        "--target-table", resolved_table_name,
-        "--table-type", global_cfg.get("table_type", "COPY_ON_WRITE"),
-        "--base-file-format", global_cfg.get("base_file_format", "PARQUET"),
-        "--props", f"{resolved_data_path.rstrip('/')}/hoodie.properties",
-        "--source-class", "org.apache.hudi.utilities.sources.JsonDFSSource",
-        "--source-ordering-field", global_cfg.get("precombine_field", "ts"),
-        "--payload-class", "org.apache.hudi.common.model.DefaultHoodieRecordPayload",
-        "--schemaprovider-class", "org.apache.hudi.utilities.schema.FilebasedSchemaProvider",
-        "--hoodie-conf", f"hoodie.streamer.schemaprovider.source.schema.file={resolved_data_path.rstrip('/')}/schema.avsc",
-        "--hoodie-conf", f"hoodie.streamer.schemaprovider.target.schema.file={resolved_data_path.rstrip('/')}/schema.avsc",
-        "--hoodie-conf", f"hoodie.streamer.source.dfs.root={resolved_data_path.rstrip('/')}/input/",
-        "--hoodie-conf", f"hoodie.datasource.write.recordkey.field={global_cfg.get('record_key_field', 'symbol')}",
-        "--hoodie-conf", f"hoodie.datasource.write.partitionpath.field={global_cfg.get('partition_path_field', 'date')}",
-        "--hoodie-conf", f"hoodie.datasource.write.precombine.field={global_cfg.get('precombine_field', 'ts')}",
-        "--hoodie-conf", f"hoodie.datasource.write.keygenerator.type={global_cfg.get('keygenerator_type', 'SIMPLE')}",
-        "--hoodie-conf", f"hoodie.datasource.write.hive_style_partitioning={str(global_cfg.get('hive_style_partitioning', True)).lower()}",
-        "--hoodie-conf", f"hoodie.metadata.enable={str(global_cfg.get('metadata_enable', True)).lower()}",
-        "--op", "UPSERT",
+        "--target-base-path",
+        resolved_base_path,
+        "--target-table",
+        resolved_table_name,
+        "--table-type",
+        global_cfg.get("table_type", "COPY_ON_WRITE"),
+        "--base-file-format",
+        global_cfg.get("base_file_format", "PARQUET"),
+        "--props",
+        f"{resolved_data_path.rstrip('/')}/hoodie.properties",
+        "--source-class",
+        "org.apache.hudi.utilities.sources.JsonDFSSource",
+        "--source-ordering-field",
+        global_cfg.get("precombine_field", "ts"),
+        "--payload-class",
+        "org.apache.hudi.common.model.DefaultHoodieRecordPayload",
+        "--schemaprovider-class",
+        "org.apache.hudi.utilities.schema.FilebasedSchemaProvider",
+        "--hoodie-conf",
+        f"hoodie.streamer.schemaprovider.source.schema.file={resolved_data_path.rstrip('/')}/schema.avsc",
+        "--hoodie-conf",
+        f"hoodie.streamer.schemaprovider.target.schema.file={resolved_data_path.rstrip('/')}/schema.avsc",
+        "--hoodie-conf",
+        f"hoodie.streamer.source.dfs.root={resolved_data_path.rstrip('/')}/input/",
+        "--hoodie-conf",
+        f"hoodie.datasource.write.recordkey.field={global_cfg.get('record_key_field', 'symbol')}",
+        "--hoodie-conf",
+        f"hoodie.datasource.write.partitionpath.field={global_cfg.get('partition_path_field', 'date')}",
+        "--hoodie-conf",
+        f"hoodie.datasource.write.precombine.field={global_cfg.get('precombine_field', 'ts')}",
+        "--hoodie-conf",
+        f"hoodie.datasource.write.keygenerator.type={global_cfg.get('keygenerator_type', 'SIMPLE')}",
+        "--hoodie-conf",
+        f"hoodie.datasource.write.hive_style_partitioning={str(global_cfg.get('hive_style_partitioning', True)).lower()}",
+        "--hoodie-conf",
+        f"hoodie.metadata.enable={str(global_cfg.get('metadata_enable', True)).lower()}",
+        "--op",
+        "UPSERT",
     ]
 
 
@@ -726,11 +986,21 @@ def build_streamer_sync_args(
     table_name: Optional[str] = None,
     config: Optional[dict] = None,
 ) -> List[str]:
-    tool = get_sync_tool(sync_type, config_path=config_path, config=config, base_path=base_path, table_name=table_name)
+    tool = get_sync_tool(
+        sync_type,
+        config_path=config_path,
+        config=config,
+        base_path=base_path,
+        table_name=table_name,
+    )
     errors = tool.validate_config()
     if errors:
         raise ValueError("Invalid config: " + "; ".join(errors))
-    args: List[str] = ["--enable-sync", "--sync-tool-classes", tool.sync_tool_class_name]
+    args: List[str] = [
+        "--enable-sync",
+        "--sync-tool-classes",
+        tool.sync_tool_class_name,
+    ]
     args.extend(hoodie_conf_to_cli_args(tool.get_streamer_hoodie_conf()))
     return args
 
@@ -742,7 +1012,13 @@ def build_standalone_sync_args(
     table_name: Optional[str] = None,
     config: Optional[dict] = None,
 ) -> List[str]:
-    tool = get_sync_tool(sync_type, config_path=config_path, config=config, base_path=base_path, table_name=table_name)
+    tool = get_sync_tool(
+        sync_type,
+        config_path=config_path,
+        config=config,
+        base_path=base_path,
+        table_name=table_name,
+    )
     errors = tool.validate_config()
     if errors:
         raise ValueError("Invalid config: " + "; ".join(errors))
@@ -774,7 +1050,11 @@ def _command_to_string(cmd: List[str]) -> str:
     i = 0
     while i < len(cmd):
         arg = cmd[i]
-        if arg.startswith("--") and i + 1 < len(cmd) and not cmd[i + 1].startswith("--"):
+        if (
+            arg.startswith("--")
+            and i + 1 < len(cmd)
+            and not cmd[i + 1].startswith("--")
+        ):
             segments.append(shlex.quote(arg) + " " + shlex.quote(cmd[i + 1]))
             i += 2
         else:
@@ -796,35 +1076,43 @@ class CommandBuilder:
         self._config = config
         self._config_path = config_path
         global_cfg = get_global_config(config=config)
-        self._base_path = base_path or global_cfg.get("base_path") or global_cfg.get("base_table_path") or ""
+        self._base_path = (
+            base_path
+            or global_cfg.get("base_path")
+            or global_cfg.get("base_table_path")
+            or ""
+        )
         self._table_name = table_name or global_cfg.get("table_name")
         self._all_jars_dict = None
 
-
-    def validate_and_get_jar(self, jar: str, msg:str) -> str:
+    def validate_and_get_jar(self, jar: str, msg: str) -> str:
         if not os.path.exists(jar):
             error_msg = f"{msg} Jar(s) do not exist: {jar}"
             LOGGER.error(error_msg)
             raise RuntimeError(error_msg)
         return jar
 
-
     def get_all_jars(self) -> dict:
         all_jars_dict = self._all_jars_dict
         if all_jars_dict:
-            return all_jars_dict    
+            return all_jars_dict
         base, scala, hudi_version, spark_version = _jar_base(self._config)
         all_jars_dict = {
-            "hudi_spark_jar": os.path.join(base, f"hudi-spark{spark_version}-bundle_{scala}-{hudi_version}.jar"),
-            "utilities_slim_jar": os.path.join(base, f"hudi-utilities-slim-bundle_{scala}-{hudi_version}.jar"),
+            "hudi_spark_jar": os.path.join(
+                base, f"hudi-spark{spark_version}-bundle_{scala}-{hudi_version}.jar"
+            ),
+            "utilities_slim_jar": os.path.join(
+                base, f"hudi-utilities-slim-bundle_{scala}-{hudi_version}.jar"
+            ),
             "gcp_jar": os.path.join(base, f"hudi-gcp-bundle-{hudi_version}.jar"),
             "aws_jar": os.path.join(base, f"hudi-aws-bundle-{hudi_version}.jar"),
-            "datahub_jar": os.path.join(base, f"hudi-datahub-sync-bundle-{hudi_version}.jar"),
+            "datahub_jar": os.path.join(
+                base, f"hudi-datahub-sync-bundle-{hudi_version}.jar"
+            ),
             "hive_jar": os.path.join(base, f"hudi-hive-sync-bundle-{hudi_version}.jar"),
         }
         self.all_jars_dict = all_jars_dict
         return self.all_jars_dict
-
 
     def _get_jar_args_and_utilities_jar(self, sync_type: str) -> tuple[List[str], str]:
         all_jars = self.get_all_jars()
@@ -835,19 +1123,22 @@ class CommandBuilder:
         if sync_type == "glue":
             jars.append(self.validate_and_get_jar(all_jars["aws_jar"], "Hudi AWS"))
         if sync_type == "datahub":
-            jars.append(self.validate_and_get_jar(all_jars["datahub_jar"], "Hudi Datahub"))
+            jars.append(
+                self.validate_and_get_jar(all_jars["datahub_jar"], "Hudi Datahub")
+            )
         if sync_type == "hive":
             jars.append(self.validate_and_get_jar(all_jars["hive_jar"], "Hudi Hive"))
         args: List[str] = ["--jars", ",".join(jars)]
         if packages:
             args.extend(["--packages", packages])
-        return args, self.validate_and_get_jar(all_jars["utilities_slim_jar"], "Hudi Utilities Slim")
-
+        return args, self.validate_and_get_jar(
+            all_jars["utilities_slim_jar"], "Hudi Utilities Slim"
+        )
 
     def _get_standalone_main_jar(self, sync_type: str) -> str:
         all_jars = self.get_all_jars()
         if sync_type == "bigquery":
-            return self.validate_and_get_jar(all_jars["gcp_jar"], "Hudi GCP")   
+            return self.validate_and_get_jar(all_jars["gcp_jar"], "Hudi GCP")
         if sync_type == "glue":
             return self.validate_and_get_jar(all_jars["aws_jar"], "Hudi AWS")
         if sync_type == "datahub":
@@ -856,54 +1147,91 @@ class CommandBuilder:
             return self.validate_and_get_jar(all_jars["hive_jar"], "Hudi Hive")
         return self.validate_and_get_jar(all_jars["hudi_spark_jar"], "Hudi Spark")
 
-
     def build_inline_command(self, sync_type: str) -> List[str]:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
         global_cfg = get_global_config(config=self._config)
         extraclasspath_enabled = global_cfg.get("extraclasspath_enabled", False)
         if extraclasspath_enabled:
             jar_args.extend(["--conf", f"spark.driver.extraClassPath={utilities_jar}"])
-            jar_args.extend(["--conf", f"spark.executor.extraClassPath={utilities_jar}"])
+            jar_args.extend(
+                ["--conf", f"spark.executor.extraClassPath={utilities_jar}"]
+            )
 
         return [
-            "spark-submit", "--master", global_cfg.get("spark_master", "local[2]"),
+            "spark-submit",
+            "--master",
+            global_cfg.get("spark_master", "local[2]"),
             *jar_args,
-            "--class", "org.apache.hudi.utilities.streamer.HoodieStreamer",
+            "--class",
+            "org.apache.hudi.utilities.streamer.HoodieStreamer",
             utilities_jar,
-            *build_base_streamer_args(config=self._config, base_path=self._base_path or None, table_name=self._table_name or None),
-            *build_streamer_sync_args(sync_type, config_path=self._config_path, config=self._config, base_path=self._base_path or None, table_name=self._table_name or None),
+            *build_base_streamer_args(
+                config=self._config,
+                base_path=self._base_path or None,
+                table_name=self._table_name or None,
+            ),
+            *build_streamer_sync_args(
+                sync_type,
+                config_path=self._config_path,
+                config=self._config,
+                base_path=self._base_path or None,
+                table_name=self._table_name or None,
+            ),
         ]
-
 
     def build_ingestion_only_command(self, sync_type: str) -> List[str]:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
         global_cfg = get_global_config(config=self._config)
         return [
-            "spark-submit", "--master", global_cfg.get("spark_master", "local[2]"),
+            "spark-submit",
+            "--master",
+            global_cfg.get("spark_master", "local[2]"),
             *jar_args,
-            "--class", "org.apache.hudi.utilities.streamer.HoodieStreamer",
+            "--class",
+            "org.apache.hudi.utilities.streamer.HoodieStreamer",
             utilities_jar,
-            *build_base_streamer_args(config=self._config, base_path=self._base_path or None, table_name=self._table_name or None),
+            *build_base_streamer_args(
+                config=self._config,
+                base_path=self._base_path or None,
+                table_name=self._table_name or None,
+            ),
         ]
 
-
     def build_standalone_sync_command(self, sync_type: str) -> List[str]:
-        tool = get_sync_tool(sync_type, config_path=self._config_path, config=self._config, base_path=self._base_path, table_name=self._table_name)
+        tool = get_sync_tool(
+            sync_type,
+            config_path=self._config_path,
+            config=self._config,
+            base_path=self._base_path,
+            table_name=self._table_name,
+        )
         jar_args, _ = self._get_jar_args_and_utilities_jar(sync_type)
         main_jar = self._get_standalone_main_jar(sync_type)
         global_cfg = get_global_config(config=self._config)
         return [
-            "spark-submit", "--master", global_cfg.get("spark_master", "local[2]"),
+            "spark-submit",
+            "--master",
+            global_cfg.get("spark_master", "local[2]"),
             *jar_args,
-            "--class", tool.sync_tool_class_name,
+            "--class",
+            tool.sync_tool_class_name,
             main_jar,
-            *build_standalone_sync_args(sync_type, config_path=self._config_path, config=self._config, base_path=self._base_path or None, table_name=self._table_name or None),
+            *build_standalone_sync_args(
+                sync_type,
+                config_path=self._config_path,
+                config=self._config,
+                base_path=self._base_path or None,
+                table_name=self._table_name or None,
+            ),
         ]
 
-
-    def get_spark_datasource_code(self, base_path: str, table_name: str, hudi_options: str) -> str:
+    def get_spark_datasource_code(
+        self, base_path: str, table_name: str, hudi_options: str
+    ) -> str:
         global_cfg = get_global_config(config=self._config)
-        data_path = (global_cfg.get("base_data_path") or global_cfg.get("data_path")).rstrip("/")
+        data_path = (
+            global_cfg.get("base_data_path") or global_cfg.get("data_path")
+        ).rstrip("/")
         return f"""
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import to_timestamp, col
@@ -928,23 +1256,40 @@ df.write.format("hudi").\\
     save(base_path)
 """
 
-
     def build_datasource_command(self, sync_type: str) -> List[str]:
-        tool = get_sync_tool(sync_type, config_path=self._config_path, config=self._config, base_path=self._base_path, table_name=self._table_name)
+        tool = get_sync_tool(
+            sync_type,
+            config_path=self._config_path,
+            config=self._config,
+            base_path=self._base_path,
+            table_name=self._table_name,
+        )
         global_cfg = get_global_config(config=self._config)
         base_path = self._base_path or tool.config.get("base_path", "")
         table_name = self._table_name or tool.config.get("table_name")
         opts = tool.get_datasource_hoodie_options()
         opts["hoodie.table.name"] = table_name
-        opts["hoodie.datasource.write.recordkey.field"] = global_cfg.get("record_key_field", "symbol")
-        opts["hoodie.datasource.write.precombine.field"] = global_cfg.get("precombine_field", "ts")
-        opts["hoodie.datasource.write.partitionpath.field"] = global_cfg.get("partition_path_field", "date")
-        opts["hoodie.datasource.write.hive_style_partitioning"] = str(global_cfg.get("hive_style_partitioning", True)).lower()
-        hudi_options = "\n    ".join(f'option("{k}", "{v}").\\' for k, v in opts.items() if v)
+        opts["hoodie.datasource.write.recordkey.field"] = global_cfg.get(
+            "record_key_field", "symbol"
+        )
+        opts["hoodie.datasource.write.precombine.field"] = global_cfg.get(
+            "precombine_field", "ts"
+        )
+        opts["hoodie.datasource.write.partitionpath.field"] = global_cfg.get(
+            "partition_path_field", "date"
+        )
+        opts["hoodie.datasource.write.hive_style_partitioning"] = str(
+            global_cfg.get("hive_style_partitioning", True)
+        ).lower()
+        hudi_options = "\n    ".join(
+            f'option("{k}", "{v}").\\' for k, v in opts.items() if v
+        )
 
-        datasource_code = self.get_spark_datasource_code(base_path, table_name, hudi_options)
+        datasource_code = self.get_spark_datasource_code(
+            base_path, table_name, hudi_options
+        )
         file_name = os.path.join(base_path, f"{table_name}_app.py")
-        file_dir = os.path.dirname(file_name)   
+        file_dir = os.path.dirname(file_name)
         os.makedirs(file_dir, exist_ok=True)
         if os.path.exists(file_name):
             os.remove(file_name)
@@ -957,20 +1302,30 @@ df.write.format("hudi").\\
         global_cfg = get_global_config(config=self._config)
 
         return [
-            "spark-submit", "--master", global_cfg.get("spark_master", "local[2]"),
+            "spark-submit",
+            "--master",
+            global_cfg.get("spark_master", "local[2]"),
             *jar_args,
             file_name,
         ]
 
 
-def run_validation(sync_type: str, config: dict, base_path: Optional[str], table_name: Optional[str]) -> int:
-    tool = get_sync_tool(sync_type, config=config, base_path=base_path, table_name=table_name)
+def run_validation(
+    sync_type: str, config: dict, base_path: Optional[str], table_name: Optional[str]
+) -> int:
+    tool = get_sync_tool(
+        sync_type, config=config, base_path=base_path, table_name=table_name
+    )
     return tool.validate_environment()
-    
 
-def validate_sync(sync_type: str, mode:str, config: dict, base_path: str, table_name: str) -> int:
-    log_section(f"Validating the Hudi Catalog Sync for the Sync Type: {sync_type} and Mode: {mode}")
-    database = config.get("database")  or "default"
+
+def validate_sync(
+    sync_type: str, mode: str, config: dict, base_path: str, table_name: str
+) -> int:
+    log_section(
+        f"Validating the Hudi Catalog Sync for the Sync Type: {sync_type} and Mode: {mode}"
+    )
+    database = config.get("database") or "default"
     results = run_validation(sync_type, config, base_path, table_name)
 
     final_validation_status = False
@@ -980,24 +1335,34 @@ def validate_sync(sync_type: str, mode:str, config: dict, base_path: str, table_
         final_validation_status = validation_status | final_validation_status
         validation_msg = result.message
         if validation_status:
-            log_success(f"[{validation_type}] [{result.validation_type}] - {validation_msg}")
+            log_success(
+                f"[{validation_type}] [{result.validation_type}] - {validation_msg}"
+            )
         else:
-            log_failure(f"[{validation_type}] [{result.validation_type}] - {validation_msg}")
-    
+            log_failure(
+                f"[{validation_type}] [{result.validation_type}] - {validation_msg}"
+            )
+
     if final_validation_status:
-        log_success(f"Hudi Catalog Sync Validation Successful for Sync Type: {sync_type} and Mode: {mode}")
+        log_success(
+            f"Hudi Catalog Sync Validation Successful for Sync Type: {sync_type} and Mode: {mode}"
+        )
         return 0
     else:
-        log_failure(f"Hudi Catalog Sync Validation Failed for Sync Type: {sync_type} and Mode: {mode}")
+        log_failure(
+            f"Hudi Catalog Sync Validation Failed for Sync Type: {sync_type} and Mode: {mode}"
+        )
         return 1
 
-def display_command(cmd: List[str], msg: str) -> None:
+
+def display_command(cmd: List[str], msg: str, pattern: str = "_") -> None:
     cmd_str = _command_to_string(cmd)
-    print("_" * 75)
+    print(pattern * 75)
     print(f"\n{msg}\n")
     print(f"{cmd_str}\n")
-    print("_" * 75)
+    print(pattern * 75)
     print("\n")
+
 
 # -----------------------------------------------------------------------------
 # Main CLI
@@ -1008,12 +1373,39 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--sync-type", required=True, choices=list(SYNC_TYPE_REGISTRY), help="Sync target: hive, bigquery, glue, datahub")
-    parser.add_argument("--mode", required=True, choices=MODES, help="Test mode: inline, separate, datasource, validate")
-    parser.add_argument("--config", default=None, help="Path to config.yaml (default: project config.yaml)")
-    parser.add_argument("--run", action="store_true", help="Execute the command(s) with subprocess (default: print only)")
-    parser.add_argument("--dry-run", action="store_true", default=True, help="Print command(s) only (default). Use --run to execute.")
-    parser.add_argument("--validate", action="store_true", help="After running, run environment validation.")
+    parser.add_argument(
+        "--sync-type",
+        required=True,
+        choices=list(SYNC_TYPE_REGISTRY),
+        help="Sync target: hive, bigquery, glue, datahub",
+    )
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=MODES,
+        help="Test mode: inline, separate, datasource, validate",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to config.yaml (default: project config.yaml)",
+    )
+    parser.add_argument(
+        "--run",
+        action="store_true",
+        help="Execute the command(s) with subprocess (default: print only)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=True,
+        help="Print command(s) only (default). Use --run to execute.",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="After running, run environment validation.",
+    )
     args = parser.parse_args()
     if args.run:
         args.dry_run = False
@@ -1033,13 +1425,18 @@ def main() -> int:
 
     global_cfg = get_global_config(config=config)
     base_table_path = global_cfg.get("base_table_path")
-    base_table_name = global_cfg.get('base_table_name') 
+    base_table_name = global_cfg.get("base_table_name")
     hudi_version_str = global_cfg.get("hudi_version_str")
     table_name = f"{base_table_name}_{sync_type}_{mode}_{hudi_version_str}"
     base_path = os.path.join(base_table_path, table_name)
     if os.path.exists(base_path):
         shutil.rmtree(base_path)
-    builder = CommandBuilder(config=config, config_path=args.config, base_path=base_path, table_name=table_name)
+    builder = CommandBuilder(
+        config=config,
+        config_path=args.config,
+        base_path=base_path,
+        table_name=table_name,
+    )
     logs_dir = os.path.join(_SCRIPT_DIR, "logs")
     os.makedirs(logs_dir, exist_ok=True)
     log_file = os.path.join(logs_dir, f"{table_name}.log")
@@ -1052,15 +1449,26 @@ def main() -> int:
 
         if args.mode == "inline":
             cmd = builder.build_inline_command(sync_type)
-            display_command(cmd, f"Displaying Hudi Ingestion and Catalog Sync command for '{sync_type_name}' using HoodieStreamer.")
+            display_command(
+                cmd,
+                f"Displaying Hudi Ingestion and Catalog Sync command for '{sync_type_name}' using HoodieStreamer.",
+            )
             if not args.dry_run:
-                log_section(f"Running Hudi Ingestion and Catalog Sync for '{sync_type_name}' using HoodieStreamer.")
+                log_section(
+                    f"Running Hudi Ingestion and Catalog Sync for '{sync_type_name}' using HoodieStreamer."
+                )
                 with open(log_file, "w") as f:
                     result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if result.returncode != 0:
-                    LOGGER.error("Inline command failed with exit code %s. See %s for full output.", result.returncode, log_file)
+                    LOGGER.error(
+                        "Inline command failed with exit code %s. See %s for full output.",
+                        result.returncode,
+                        log_file,
+                    )
                     return result.returncode
-                LOGGER.info(f"Successfully ran the Hudi Ingestion and Catalog Sync for the {sync_type_name} using HoodieStreamer.")
+                LOGGER.info(
+                    f"Successfully ran the Hudi Ingestion and Catalog Sync for the {sync_type_name} using HoodieStreamer."
+                )
             if args.validate:
                 return validate_sync(sync_type, mode, config, base_path, table_name)
             return 0
@@ -1068,22 +1476,34 @@ def main() -> int:
         if args.mode == "separate":
             cmd1 = builder.build_ingestion_only_command(sync_type)
             cmd2 = builder.build_standalone_sync_command(sync_type)
-            display_command(cmd1, f"Displaying Hudi Ingestion using HoodieStreamer command for the {sync_type_name}.")
-            display_command(cmd2, f"Displaying Standalone Catalog Sync using SyncTool command for the {sync_type_name}.")
+            display_command(
+                cmd1,
+                f"Displaying Hudi Ingestion using HoodieStreamer command for the {sync_type_name}.",
+            )
+            display_command(
+                cmd2,
+                f"Displaying Standalone Catalog Sync using SyncTool command for the {sync_type_name}.",
+            )
             if not args.dry_run:
-                log_section("Running HoodieStreamer Ingestion and Standalone Catalog Sync")
+                log_section(
+                    "Running HoodieStreamer Ingestion and Standalone Catalog Sync"
+                )
                 log_step("Phase 1 : Data Ingestion")
                 with open(log_file, "w") as f:
                     r1 = subprocess.run(cmd1, stdout=f, stderr=subprocess.STDOUT)
                 if r1.returncode != 0:
-                    LOGGER.error(f"Failed to run the Hudi Ingestion using HoodieStreamer with exit code {r1.returncode}.")
+                    LOGGER.error(
+                        f"Failed to run the Hudi Ingestion using HoodieStreamer with exit code {r1.returncode}."
+                    )
                     return r1.returncode
                 log_section("Running Standalone Catalog Sync")
                 log_step("Phase 2 : Catalog Synchronization")
                 with open(log_file, "a") as f:
                     r2 = subprocess.run(cmd2, stdout=f, stderr=subprocess.STDOUT)
                 if r2.returncode != 0:
-                    LOGGER.error(f"Failed to run the Standalone Catalog Sync job with exit code {r2.returncode}.")
+                    LOGGER.error(
+                        f"Failed to run the Standalone Catalog Sync job with exit code {r2.returncode}."
+                    )
                     return r2.returncode
                 log_success("Standalone Catalog Sync completed")
             if args.validate:
@@ -1091,13 +1511,18 @@ def main() -> int:
             return 0
 
         cmd = builder.build_datasource_command(sync_type)
-        display_command(cmd, f"Displaying Spark DataSource Write with Catalog Sync command for '{sync_type_name}'")
+        display_command(
+            cmd,
+            f"Displaying Spark DataSource Write with Catalog Sync command for '{sync_type_name}'",
+        )
         if not args.dry_run:
             log_section("Running Spark DataSource Catalog Sync")
             with open(log_file, "w") as f:
                 r3 = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
                 if r3.returncode != 0:
-                    log_failure(f"Failed to run the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type_name} with exit code {r3.returncode}.")
+                    log_failure(
+                        f"Failed to run the Spark DataSource Write with Catalog Sync for the Sync Type: {sync_type_name} with exit code {r3.returncode}."
+                    )
                     return r3.returncode
                 log_success("Spark DataSource Write with Catalog Sync completed")
         if args.validate:
