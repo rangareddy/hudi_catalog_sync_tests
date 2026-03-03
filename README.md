@@ -1,48 +1,61 @@
 # Hudi Catalog Sync Tests
 
-A single-file Python script to build and run Apache Hudi catalog sync tests for **Hive**, **BigQuery**, **Glue**, and **DataHub**. It generates `spark-submit` commands (inline or separate mode), PySpark datasource snippets, and runs environment validation.
+A Python framework to build and run Apache Hudi catalog sync tests for **Hive**, **BigQuery**, **Glue**, and **DataHub**. It generates and runs `spark-submit` commands (inline, separate, or datasource mode), runs environment validation, and writes all output to log files under `logs/`.
 
 ## Project layout
 
 ```
 hudi_catalog_sync_tests/
 ├── README.md
-├── hudi_catalog_sync.py   # Single-file implementation (CLI + config + sync tools + validation)
-└── config.yaml            # Config for all sync types (minimal example included)
+├── config.yaml                    # Config for all sync types (global, hive, bigquery, glue, datahub)
+├── hudi_catalog_sync_runner.py   # Main CLI: build/run sync commands, validation
+├── validate_database.py          # PySpark script for Hive catalog table validation (run via spark-submit)
+└── logs/                         # Log output from runs (created automatically)
+    ├── {table_name}.log          # Spark-submit output for inline/separate/datasource runs
+    └── validate_database_{sync_type}_{table_name}.log   # Hive validation output
 ```
+
+Table names and base paths are derived from config:  
+`table_name = {base_table_name}_{sync_type}_{mode}_{hudi_version_str}`  
+`base_path = {base_table_path}/{table_name}`  
+(e.g. `stock_ticks_hive_inline_0_16_0`).
 
 ## Requirements
 
 - Python 3.9+
 - **PyYAML**: `pip install pyyaml`
+- **Spark**: Set `spark_home` in `config.yaml` or `SPARK_HOME` when running commands.
 
 ## Quick start
 
 1. Install dependency: `pip install pyyaml`
-2. Ensure `config.yaml` is in the same directory as `hudi_catalog_sync.py` (a minimal example is included; edit for your environment).
-3. Run the script:
+2. Edit `config.yaml` (paths, project/dataset, metastore, etc.).
+3. Run the runner:
 
 ```bash
 # Print spark-submit command (inline: HoodieStreamer with sync)
-python hudi_catalog_sync.py --sync-type bigquery --mode inline
+python hudi_catalog_sync_runner.py --sync-type bigquery --mode inline
+
+# Run the command and write output to logs/{table_name}.log
+python hudi_catalog_sync_runner.py --sync-type hive --mode inline --run
 
 # Run environment validation only
-python hudi_catalog_sync.py --sync-type bigquery --mode validate
+python hudi_catalog_sync_runner.py --sync-type bigquery --mode validate
 
 # Custom config path
-python hudi_catalog_sync.py --sync-type glue --mode inline --config /path/to/config.yaml
+python hudi_catalog_sync_runner.py --sync-type glue --mode inline --config /path/to/config.yaml
 ```
 
 ## Modes
 
 | Mode        | Description |
 |------------|-------------|
-| **inline** | One `spark-submit` for HoodieStreamer with `--enable-sync` and the chosen sync tool. |
-| **separate** | Step 1: HoodieStreamer without sync; Step 2: standalone SyncTool. |
-| **datasource** | PySpark snippet for `df.write.format("hudi")` with meta sync; run manually in pyspark/spark-shell. |
-| **validate** | Run environment checks only (dataset/database exists, table exists, table path exists). |
+| **inline** | One `spark-submit` for HoodieStreamer with sync enabled (ingestion + catalog sync in one job). Output in `logs/{table_name}.log`. |
+| **separate** | Step 1: HoodieStreamer without sync; Step 2: standalone SyncTool. Both steps log to `logs/{table_name}.log`. |
+| **datasource** | Spark DataSource write with catalog sync: generates and runs a PySpark script. Output in `logs/{table_name}.log`. |
+| **validate** | Run environment checks only (dataset/database exists, table exists, table path exists). For Hive, uses `validate_database.py` and logs to `logs/validate_database_{sync_type}_{table_name}.log`. |
 
-Use **--validate** with any mode to run validation after the command(s). Use **--run** to execute the command(s) (inline/separate only; datasource prints a snippet to run manually).
+Use **--validate** with any mode to run validation after the command(s). Use **--run** to execute the command(s) (inline/separate/datasource); default is dry-run (print only).
 
 ## CLI options
 
@@ -50,94 +63,84 @@ Use **--validate** with any mode to run validation after the command(s). Use **-
 |--------|-------------|
 | `--sync-type` | **Required.** One of: `hive`, `bigquery`, `glue`, `datahub`. |
 | `--mode` | **Required.** One of: `inline`, `separate`, `datasource`, `validate`. |
-| `--config` | Path to `config.yaml` (default: `config.yaml` next to the script). |
-| `--base-path` | Override table base path. |
-| `--table-name` | Override table name. |
-| `--run` | Execute the command(s) with subprocess (default is dry-run: print only). |
-| `--dry-run` | Print command(s) only (default). |
+| `--config` | Path to `config.yaml` (default: `config.yaml` in script directory). |
+| `--run` | Execute the command(s) with subprocess; spark-submit output goes to `logs/{table_name}.log`. |
+| `--dry-run` | Print command(s) only (default). Use `--run` to execute. |
 | `--validate` | After running (or with dry-run), run environment validation. |
+
+Base path and table name are derived from `config.yaml`: `base_table_path`, `base_table_name`, plus sync type, mode, and Hudi version string.
 
 ## Examples
 
 ```bash
 # Inline + validation (dry-run)
-python hudi_catalog_sync.py --sync-type bigquery --mode inline --validate
+python hudi_catalog_sync_runner.py --sync-type bigquery --mode inline --validate
 
 # Separate mode: print both commands
-python hudi_catalog_sync.py --sync-type glue --mode separate
+python hudi_catalog_sync_runner.py --sync-type glue --mode separate
 
-# Datasource: print PySpark snippet
-python hudi_catalog_sync.py --sync-type datahub --mode datasource --base-path gs://bucket/path --table-name my_table
+# Run inline and write output to logs/stock_ticks_hive_inline_0_16_0.log
+python hudi_catalog_sync_runner.py --sync-type hive --mode inline --run
 
-# Validate only (BigQuery: bq/gcloud; Glue: aws; Hive/DataHub: path checks)
-python hudi_catalog_sync.py --sync-type bigquery --mode validate
-python hudi_catalog_sync.py --sync-type glue --mode validate
+# Run then validate
+python hudi_catalog_sync_runner.py --sync-type hive --mode inline --run --validate
 
-# Execute inline command
-python hudi_catalog_sync.py --sync-type hive --mode inline --run
+# Validate only (BigQuery: bq/gcloud; Glue: aws; Hive: validate_database.py + path checks; DataHub: API + path)
+python hudi_catalog_sync_runner.py --sync-type bigquery --mode validate
+python hudi_catalog_sync_runner.py --sync-type hive --mode validate
 ```
 
 ## Configuration
 
-The script looks for `config.yaml` in the same directory as `hudi_catalog_sync.py` unless you pass `--config`. The file must have a **global** section and one section per sync type: **hive**, **bigquery**, **glue**, **datahub**. Empty `table_name`, `table`, or `base_path` in a sync section are filled from `global`.
+The script loads `config.yaml` from the script directory unless you pass `--config`. The file must have a **global** section and one section per sync type: **hive**, **bigquery**, **glue**, **datahub**. Sync sections inherit from global; empty `table_name`, `table`, or `base_path` are filled from global. The runner overwrites base path and table name per run using `base_table_path`, `base_table_name`, sync type, mode, and Hudi version.
 
-### Minimal `config.yaml` example
+### Global config (main keys)
 
 ```yaml
 global:
-  spark_version: "3.5"
+  spark_home: ''                    # Optional; else set SPARK_HOME
+  spark_master: "local[4]"
+  spark_version: "3.4.4"
   scala_version: "2.12"
   hudi_version: "0.16.0-SNAPSHOT"
-  table_name: stocks_sync_test
-  base_path: "${TABLE_BASE_PATH}"
-  data_path: "${DATA_PATH}"
-  partition_fields: date
-  record_key_field: symbol
-  precombine_field: ts
-  partition_path_field: date
-  keygenerator_type: SIMPLE
+  base_table_name: "stock_ticks"
+  base_table_path: "/tmp/hudi_catalog_sync/tables"
+  base_data_path: "/tmp/hudi_catalog_sync/data"
+  jars_path: "/tmp/hudi_catalog_sync/jars"
+  table_type: "COPY_ON_WRITE"
+  base_file_format: "PARQUET"
+  database_name: "default"
+  partition_fields: "date"
+  record_key_field: "symbol"
+  precombine_field: "ts"
+  partition_path_field: "date"
+  keygenerator_type: "SIMPLE"
   hive_style_partitioning: true
   metadata_enable: true
-
-hive:
-  enabled: true
-  database: default
-  mode: hms
-  metastore_uris: thrift://localhost:9083
-
-bigquery:
-  enabled: true
-  project_id: my-project
-  dataset_name: my_dataset
-  dataset_location: us-central1
-
-glue:
-  enabled: true
-  database: hudi_db
-
-datahub:
-  enabled: true
-  emitter_server: http://localhost:8080
-  database: datahub_db
+  extraclasspath_enabled: false
+  mode: "hms"
+  metastore_uris: "thrift://localhost:9083"
 ```
 
-Set `base_path` (and optionally `jars_path`, `data_path`) when running on a cluster; the script uses `${TABLE_BASE_PATH}`, `${DATA_PATH}`, `${HUDI_JARS}`, `${HUDI_UTILITIES_SLIM_JAR}` etc. in generated commands when not overridden.
+### Sync-type sections
+
+Each sync type has its own block (e.g. `hive:`, `bigquery:`, `glue:`, `datahub:`) with `enabled`, `sync_tool_class`, and type-specific options (e.g. `database`, `project_id`, `dataset_name`, `emitter_server`). See `config.yaml` in the project for the full structure.
 
 ## Logging
 
-- **LOG_LEVEL**: `DEBUG`, `INFO`, `WARNING`, `ERROR` (default: `INFO`).
-- **LOG_FORMAT**: Custom format string (default: `%(asctime)s | %(levelname)-8s | %(name)s | %(message)s`).
+- **Runner**: Uses Python `logging`; level and format can be adjusted in the script.
+- **Spark-submit**: When using `--run`, all spark-submit stdout/stderr are written to `logs/{table_name}.log` (inline, separate, and datasource). For Hive validation, `validate_database.py` output is written to `logs/validate_database_{sync_type}_{table_name}.log`.
 
 ## Post-sync validation
 
-Validation uses CLI tools on the machine where you run the script; ensure the right tools and credentials are available:
+Validation uses CLI tools and (for Hive) a PySpark script on the machine where you run the runner:
 
-| Sync type | Checks | Tools |
-|-----------|--------|--------|
+| Sync type | Checks | Tools / Script |
+|-----------|--------|-----------------|
+| **Hive** | Table path exists, table exists in Hive | `validate_database.py` (spark-submit with env: `val_database_name`, `val_table_name`, `val_hive_thrift_uri`) |
 | **BigQuery** | Dataset exists, table exists, GCS path exists | `bq`, `gcloud storage` |
 | **Glue** | Database exists, table exists, S3 path exists | `aws glue`, `aws s3` |
-| **Hive** | Table path exists (local, GCS, or S3) | `gcloud` / `aws` / local filesystem |
-| **DataHub** | Dataset entity in DataHub, table path exists | `curl` (DataHub search API), path check |
+| **DataHub** | Dataset entity in DataHub, table path exists | `datahub` CLI / API, path check |
 
 ## Sync tool classes (reference)
 
@@ -148,31 +151,6 @@ Validation uses CLI tools on the machine where you run the script; ensure the ri
 | Glue | `org.apache.hudi.aws.sync.AwsGlueCatalogSyncTool` |
 | DataHub | `org.apache.hudi.sync.datahub.DataHubSyncTool` |
 
-## Programmatic use
-
-You can import from `hudi_catalog_sync` when the script is on `PYTHONPATH`:
-
-```python
-from hudi_catalog_sync import (
-    load_config,
-    get_global_config,
-    get_sync_config,
-    get_sync_tool,
-    CommandBuilder,
-    ValidationResult,
-    SYNC_TYPE_REGISTRY,
-)
-
-config = load_config()
-tool = get_sync_tool("glue", config=config, base_path="s3a://b/p", table_name="t")
-print(tool.sync_tool_class_name)
-print(tool.get_streamer_hoodie_conf())
-
-builder = CommandBuilder(config=config, base_path="s3a://b/p", table_name="t")
-cmd = builder.build_inline_command("glue")
-print(CommandBuilder.command_to_string(cmd))
-```
-
 ## License
 
-See the script header and Apache Hudi documentation for license and attribution.
+See the script headers and Apache Hudi documentation for license and attribution.
