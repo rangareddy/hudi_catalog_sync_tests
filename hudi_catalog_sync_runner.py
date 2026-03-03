@@ -405,7 +405,8 @@ def validate_table_path(base_path: str) -> ValidationResult:
     if base_path.startswith("s3://") or base_path.startswith("s3a://"):
         return validate_s3_path(base_path)
     hdfs_cmd_exists = _run_cmd(["hdfs", "dfs", "-ls"])
-    if not hdfs_cmd_exists[0]:
+    if not hdfs_cmd_exists[0] or base_path.startswith("file://"):
+        base_path = base_path.replace("file://", "")
         return validate_local_path(base_path)
     ok, err = _run_cmd(["hdfs", "dfs", "-ls", base_path])
     if ok:
@@ -571,27 +572,26 @@ class HiveSyncTool(AbstractSyncTool):
         log_file = os.path.join(
             logs_dir, f"validate_database_{sync_type}_{table_name}.log"
         )
-        log_section(f"Hive Catalog Validation for the Table {database}.{table_name}", "_")
-        log_step(f"Validating table existence")
+        log_step(f"Validating the Sync Tests for the Hive Table {database}.{table_name} and table path {base_path}")
         with open(log_file, "w") as f:
             result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True)
             if result.returncode != 0:
-                LOGGER.error(
-                    f"Failed to validate the Hive Catalog for the Table {database}.{table_name}: {result.stderr} in {log_file}"
-                )
+                log_failure(
+                    f"Failed to validate the Sync Tests for the Hive Table {database}.{table_name}: {result.stderr} in {log_file}"
+                )   
                 return ValidationResult(
                     "database_table",
                     False,
                     f"Spark error: {result.stderr} in {log_file}",
                     "hive_catalog",
                 )
-            LOGGER.info(
-                f"Hive Catalog Validation Successful for the Table {database}.{table_name}"
+            log_success(
+                f"Sync Tests Validation completed successfully for the Hive Table {database}.{table_name}"
             )
             return ValidationResult(
                 "database_table",
                 True,
-                f"Hive Catalog Validation Successful for the Table {database}.{table_name}",
+                f"Sync Tests Validation Successful for the Hive Table {database}.{table_name}",
                 "hive_catalog",
             )
 
@@ -1341,7 +1341,7 @@ def run_validation(
 def validate_sync(
     sync_type: str, mode: str, config: dict, base_path: str, table_name: str
 ) -> int:
-    log_section(
+    log_step(
         f"Validating the Hudi Catalog Sync for the Sync Type: {sync_type} and Mode: {mode}"
     )
     database = config.get("database") or "default"
@@ -1364,12 +1364,12 @@ def validate_sync(
 
     if final_validation_status:
         log_success(
-            f"Hudi Catalog Sync Validation Successful for Sync Type: {sync_type} and Mode: {mode}"
+            f"Hudi Catalog Sync Validation completed successfully for Sync Type: {sync_type} and Mode: {mode}"
         )
         return 0
     else:
         log_failure(
-            f"Hudi Catalog Sync Validation Failed for Sync Type: {sync_type} and Mode: {mode}"
+            f"Hudi Catalog Sync Validation completed with failures for Sync Type: {sync_type} and Mode: {mode}"
         )
         return 1
 
