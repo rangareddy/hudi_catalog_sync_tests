@@ -1271,7 +1271,7 @@ df.write.format("hudi").\\
             table_name=self._table_name,
         )
         global_cfg = get_global_config(config=self._config)
-        base_path = self._base_path or tool.config.get("base_path", "")
+        base_path = self._base_path or tool.config.get("base_path")
         table_name = self._table_name or tool.config.get("table_name")
         opts = tool.get_datasource_hoodie_options()
         opts["hoodie.table.name"] = table_name
@@ -1294,7 +1294,8 @@ df.write.format("hudi").\\
         datasource_code = self.get_spark_datasource_code(
             base_path, table_name, hudi_options
         )
-        file_name = os.path.join(base_path, f"{table_name}_app.py")
+        base_data_path = tool.config.get("base_data_path")
+        file_name = os.path.join(base_data_path, f"{table_name}_app.py")
         file_dir = os.path.dirname(file_name)
         os.makedirs(file_dir, exist_ok=True)
         if os.path.exists(file_name):
@@ -1506,7 +1507,7 @@ def main() -> int:
                     r2 = subprocess.run(cmd2, stdout=f, stderr=subprocess.STDOUT)
                 if r2.returncode != 0:
                     LOGGER.error(
-                        f"Failed to run the Standalone Catalog Sync job with exit code {r2.returncode}."
+                        f"Failed to run the Standalone Catalog Sync job with exit code {r2.returncode}. Check the log file {log_file} for more details."
                     )
                     return r2.returncode
                 log_success("Standalone Catalog Sync completed")
