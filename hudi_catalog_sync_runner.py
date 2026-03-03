@@ -342,8 +342,7 @@ def validate_datahub_dataset(
         "input": f"{database_name}.{table_name}",
     }
     try:
-        result = subprocess.run(
-            [
+        cmd = [
                 "curl",
                 "-s",
                 "-X",
@@ -353,11 +352,9 @@ def validate_datahub_dataset(
                 "Content-Type: application/json",
                 "-d",
                 json.dumps(payload),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+            ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15,)
         if result.returncode != 0:
             return ValidationResult(
                 "datahub_dataset",
@@ -438,6 +435,10 @@ class AbstractSyncTool(ABC):
         )
         for key, value in overrides.items():
             if value is not None:
+                if type(value) == str:
+                    value = value.strip()
+                if type(value) == bool:
+                    value = str(value).lower()
                 self._merged_config[key] = value
 
     @property
@@ -866,15 +867,17 @@ class DataHubSyncTool(AbstractSyncTool):
 
     def validate_environment(self) -> List[ValidationResult]:
         cfg = self._merged_config
-        emitter = cfg.get("emitter_server").strip()
-        database = cfg.get("database").strip()
-        table_name = cfg.get("table_name").strip()
-        base_path = cfg.get("base_path").strip()
+        emitter = cfg.get("emitter_server")
+        database = cfg.get("database")
+        table_name = cfg.get("table_name")
+        base_path = cfg.get("base_path")
         results: List[ValidationResult] = []
         if emitter and table_name:
             results.append(validate_datahub_dataset(emitter, database, table_name))
         if base_path and not base_path.startswith("${"):
             results.append(validate_table_path(base_path))
+        #if database and table_name:
+        #    results.append(validate_database_table(database, table_name))
         return results
 
 
