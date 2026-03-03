@@ -1242,12 +1242,14 @@ class CommandBuilder:
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import to_timestamp, col
 
-spark = (SparkSession.builder \
-    .appName("Hudi Spark DataSource Write with Catalog Sync") \
-    .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
-    .config("spark.sql.extensions", "org.apache.spark.sql.hudi.HoodieSparkSessionExtension") \
-    .config("spark.sql.catalog.hudi", "org.apache.spark.sql.hudi.catalog.HoodieCatalog") \
-    .getOrCreate())
+spark = (
+    SparkSession.builder
+    .appName("Hudi Spark DataSource Write with Catalog Sync")
+    .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+    .config("spark.sql.extensions", "org.apache.spark.sql.hudi.HoodieSparkSessionExtension")
+    .config("spark.sql.catalog.hudi", "org.apache.spark.sql.hudi.catalog.HoodieCatalog")
+    .getOrCreate()
+)
 
 input_path = "{data_path}/input/"
 base_path = "{base_path}"
