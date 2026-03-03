@@ -72,22 +72,23 @@ Base path and table name are derived from `config.yaml`: `base_table_path`, `bas
 
 ## Examples
 
+```sh
+# Print the Commands
+python hudi_catalog_sync_runner.py --sync-type glue --mode inline
+python hudi_catalog_sync_runner.py --sync-type hive --mode inline
+python hudi_catalog_sync_runner.py --sync-type datahub --mode inline
+python hudi_catalog_sync_runner.py --sync-type bigquery --mode inline
+```
+
 ```bash
-# Inline + validation (dry-run)
-python hudi_catalog_sync_runner.py --sync-type bigquery --mode inline --validate
+# Inline + validation
+python hudi_catalog_sync_runner.py --sync-type bigquery --mode inline --run --validate
 
-# Separate mode: print both commands
-python hudi_catalog_sync_runner.py --sync-type glue --mode separate
+# Seperate
+python hudi_catalog_sync_runner.py --sync-type hive --mode separate --run --validate
 
-# Run inline and write output to logs/stock_ticks_hive_inline_0_16_0.log
-python hudi_catalog_sync_runner.py --sync-type hive --mode inline --run
-
-# Run then validate
-python hudi_catalog_sync_runner.py --sync-type hive --mode inline --run --validate
-
-# Validate only (BigQuery: bq/gcloud; Glue: aws; Hive: validate_database.py + path checks; DataHub: API + path)
-python hudi_catalog_sync_runner.py --sync-type bigquery --mode validate
-python hudi_catalog_sync_runner.py --sync-type hive --mode validate
+# DataSource
+python hudi_catalog_sync_runner.py --sync-type bigquery --mode datasource --run --validate
 ```
 
 ## Configuration
