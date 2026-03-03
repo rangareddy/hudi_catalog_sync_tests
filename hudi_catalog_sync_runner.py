@@ -43,17 +43,14 @@ import yaml
 # -----------------------------------------------------------------------------
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = _SCRIPT_DIR / "config.yaml"
-MODES = ("inline", "separate", "datasource", "validate")
-
+DEFAULT_MASTER = "local[2]"
+MODES: Final = ("inline", "separate", "datasource", "validate")
+DEFAULT_TIMEOUT: Final = 60
 # =============================================================================
 # Logging Setup
 # =============================================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
-
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 LOGGER = logging.getLogger("hudi_catalog_sync")
 
 
@@ -95,7 +92,7 @@ class ValidationResult:
 # =============================================================================
 # Command Runner
 # =============================================================================
-def _run_cmd(cmd: List[str], timeout_seconds: int = 300) -> tuple[bool, str]:
+def _run_cmd(cmd: List[str], timeout_seconds: int = DEFAULT_TIMEOUT) -> Tuple[bool, str]:
     LOGGER.debug("Executing:\n%s", " ".join(cmd))
     try:
         result = subprocess.run(
@@ -128,7 +125,7 @@ def load_config(config_path: Optional[os.PathLike] = None) -> dict[str, Any]:
     path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
     if not path.is_file():
         LOGGER.error("Config file not found: %s", path)
-        raise FileNotFoundError(f"Config file not found: {path}")
+        raise FileNotFoundError(f"Missing config at {path}")
     with open(path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
     LOGGER.debug("Loaded config from %s", path)
@@ -418,9 +415,9 @@ def validate_table_path(base_path: str) -> ValidationResult:
     return ValidationResult("table_path", False, err or "Path not found", "hdfs_path")
 
 
-# -----------------------------------------------------------------------------
-# Sync tools (abstract base + Hive, BigQuery, Glue, DataHub)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Core Sync Logic (Abstraction)
+# =============================================================================
 class AbstractSyncTool(ABC):
     SYNC_TYPE: str = "base"
 
@@ -481,6 +478,9 @@ class AbstractSyncTool(ABC):
         return bool(self._merged_config.get("enabled", True))
 
 
+# =============================================================================
+# Hive Implementation
+# =============================================================================
 class HiveSyncTool(AbstractSyncTool):
     SYNC_TYPE = "hive"
 
@@ -606,7 +606,9 @@ class HiveSyncTool(AbstractSyncTool):
             self.validate_database_table(database_name, table_name),
         ]
 
-
+# =============================================================================
+# BigQuery Implementation
+# =============================================================================
 class BigQuerySyncTool(AbstractSyncTool):
     SYNC_TYPE = "bigquery"
 
@@ -713,6 +715,9 @@ class BigQuerySyncTool(AbstractSyncTool):
         )
 
 
+# =============================================================================
+# AWS Glue Implementation
+# =============================================================================
 class GlueSyncTool(AbstractSyncTool):
     SYNC_TYPE = "glue"
 
@@ -790,6 +795,9 @@ class GlueSyncTool(AbstractSyncTool):
         return results
 
 
+# =============================================================================
+# DataHub Implementation
+# =============================================================================
 class DataHubSyncTool(AbstractSyncTool):
     SYNC_TYPE = "datahub"
 
@@ -1396,7 +1404,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--config",
-        default=None,
+        type=Path, 
+        default="config.yaml",
         help="Path to config.yaml (default: project config.yaml)",
     )
     parser.add_argument(
