@@ -138,8 +138,10 @@ def get_global_config(
     if config is None:
         config = load_config(config_path)
     global_cfg = dict(config.get("global", {}))
-    # Derived keys (use copy to avoid mutating caller's config)
-    hudi_ver = global_cfg.get("hudi_version", "0.16.0-SNAPSHOT")
+    os_hudi_version_os = os.getenv("HUDI_VERSION")
+    if os_hudi_version_os:
+        global_cfg["hudi_version"] = os_hudi_version_os
+    hudi_ver = global_cfg.get("hudi_version")
     match = re.match(r"(\d+\.\d+(?:\.\d+)?)", str(hudi_ver))
     global_cfg["hudi_version_str"] = (
         match.group(1).replace(".", "_") if match else "0_16_0"
@@ -554,12 +556,8 @@ class HiveSyncTool(AbstractSyncTool):
         self, database: str, table_name: str
     ) -> ValidationResult:
         merged_conf = self._merged_config
-        cmd = [
-            "spark-submit",
-            "--master",
-            merged_conf.get("master", "local[2]"),
-            os.path.join(_SCRIPT_DIR, "validate_database.py"),
-        ]
+        spark_submit_script = os.path.join(os.getenv("SPARK_HOME"), "bin", "spark-submit") if os.getenv("SPARK_HOME") else "spark-submit"
+        cmd = [spark_submit_script, "--master", merged_conf.get("master", "local[2]"), os.path.join(_SCRIPT_DIR, "validate_database.py")] 
 
         os.environ["val_database_name"] = database
         os.environ["val_table_name"] = table_name
@@ -1053,7 +1051,7 @@ def _jar_base(config: dict) -> tuple:
     hudi_version = g.get("hudi_version")
     scala = g.get("scala_version")
     base = os.path.join(jars_path, hudi_version, spark_major_version)
-    if not os.path.exists(base):
+    if not os.path.exists(base) and not (base.startswith("gs://") or base.startswith("s3://")):
         error_msg = f"Jars path does not exist: {base}"
         log_failure(error_msg)
         raise RuntimeError(error_msg)
@@ -1101,7 +1099,7 @@ class CommandBuilder:
         self._all_jars_dict = None
 
     def validate_and_get_jar(self, jar: str, msg: str) -> str:
-        if not os.path.exists(jar):
+        if not os.path.exists(jar) and not (jar.startswith("gs://") or jar.startswith("s3://")):
             error_msg = f"{msg} Jar(s) do not exist: {jar}"
             LOGGER.error(error_msg)
             raise RuntimeError(error_msg)
@@ -1132,7 +1130,7 @@ class CommandBuilder:
     def _get_jar_args_and_utilities_jar(self, sync_type: str) -> tuple[List[str], str]:
         all_jars = self.get_all_jars()
         jars = [self.validate_and_get_jar(all_jars["hudi_spark_jar"], "Hudi Spark")]
-        packages = self._config.get("spark_packages", "")
+        packages = self._config.get(sync_type, {}).get("packages", "").replace(" ", "").strip()
         if sync_type == "bigquery":
             jars.append(self.validate_and_get_jar(all_jars["gcp_jar"], "Hudi GCP"))
         if sync_type == "glue":
@@ -1171,9 +1169,9 @@ class CommandBuilder:
             jar_args.extend(
                 ["--conf", f"spark.executor.extraClassPath={utilities_jar}"]
             )
-
+        spark_submit_script = os.path.join(os.getenv("SPARK_HOME"), "bin", "spark-submit") if os.getenv("SPARK_HOME") else "spark-submit"
         return [
-            "spark-submit",
+            spark_submit_script,
             "--master",
             global_cfg.get("spark_master", "local[2]"),
             *jar_args,
@@ -1197,8 +1195,9 @@ class CommandBuilder:
     def build_ingestion_only_command(self, sync_type: str) -> List[str]:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
         global_cfg = get_global_config(config=self._config)
+        spark_submit_script = os.path.join(os.getenv("SPARK_HOME"), "bin", "spark-submit") if os.getenv("SPARK_HOME") else "spark-submit"
         return [
-            "spark-submit",
+            spark_submit_script,
             "--master",
             global_cfg.get("spark_master", "local[2]"),
             *jar_args,
@@ -1223,8 +1222,9 @@ class CommandBuilder:
         jar_args, _ = self._get_jar_args_and_utilities_jar(sync_type)
         main_jar = self._get_standalone_main_jar(sync_type)
         global_cfg = get_global_config(config=self._config)
+        spark_submit_script = os.path.join(os.getenv("SPARK_HOME"), "bin", "spark-submit") if os.getenv("SPARK_HOME") else "spark-submit"
         return [
-            "spark-submit",
+            spark_submit_script,
             "--master",
             global_cfg.get("spark_master", "local[2]"),
             *jar_args,
@@ -1320,9 +1320,9 @@ df.write.format("hudi").\\
         jar_args, _ = self._get_jar_args_and_utilities_jar(sync_type)
         main_jar = self._get_standalone_main_jar(sync_type)
         global_cfg = get_global_config(config=self._config)
-
+        spark_submit_script = os.path.join(os.getenv("SPARK_HOME"), "bin", "spark-submit") if os.getenv("SPARK_HOME") else "spark-submit"
         return [
-            "spark-submit",
+            spark_submit_script,
             "--master",
             global_cfg.get("spark_master", "local[2]"),
             *jar_args,
@@ -1459,9 +1459,9 @@ def main() -> int:
     logs_dir = os.path.join(_SCRIPT_DIR, "logs")
     os.makedirs(logs_dir, exist_ok=True)
     log_file = os.path.join(logs_dir, f"{table_name}.log")
-    spark_home = global_cfg.get("spark_home")
-    if spark_home:
-        os.environ["SPARK_HOME"] = spark_home.strip()
+    SPARK_HOME = global_cfg.get("spark_home") or os.getenv("SPARK_HOME")    
+    if SPARK_HOME:
+        os.environ["SPARK_HOME"] = SPARK_HOME.strip()
     try:
         if args.mode == "validate":
             return validate_sync(sync_type, mode, config, base_path, table_name)
