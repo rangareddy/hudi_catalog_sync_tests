@@ -1130,7 +1130,7 @@ class CommandBuilder:
     def _get_jar_args_and_utilities_jar(self, sync_type: str) -> tuple[List[str], str]:
         all_jars = self.get_all_jars()
         jars = [self.validate_and_get_jar(all_jars["hudi_spark_jar"], "Hudi Spark")]
-        packages = self._config.get(sync_type, self._config.get("packages", {})).get("packages", "").replace(" ", "").strip()
+        packages = self._config.get(sync_type, self._config.get("global",{}).get("packages", "")).replace(" ", "").strip()
         if sync_type == "bigquery":
             jars.append(self.validate_and_get_jar(all_jars["gcp_jar"], "Hudi GCP"))
         if sync_type == "glue":
@@ -1482,6 +1482,8 @@ def main() -> int:
                     log_failure(
                         f"Failed to run the Hudi Ingestion and Catalog Sync for the {sync_type_name} using HoodieStreamer with exit code {result.returncode}. Check the log file {log_file} for more details."
                     )
+                    with open(log_file, "r") as f:
+                        LOGGER.info("Log file content: %s", f.read())
                     return result.returncode
                 log_success("Hudi Ingestion and Catalog Sync using HoodieStreamer completed")
             if args.validate:
@@ -1509,6 +1511,8 @@ def main() -> int:
                     LOGGER.error(
                         f"Failed to run the Hudi Ingestion using HoodieStreamer with exit code {r1.returncode}. Check the log file {log_file} for more details."
                     )
+                    with open(log_file, "r") as f:
+                        LOGGER.info("Log file content: %s", f.read())
                     return r1.returncode
                 log_success("Hudi Ingestion using HoodieStreamer completed")
                 log_step("Running Standalone Catalog Sync")
