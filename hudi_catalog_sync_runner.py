@@ -1196,6 +1196,12 @@ class CommandBuilder:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
         global_cfg = get_global_config(config=self._config)
         spark_submit_script = os.path.join(os.getenv("SPARK_HOME"), "bin", "spark-submit") if os.getenv("SPARK_HOME") else "spark-submit"
+        extraclasspath_enabled = self._config.get(sync_type, {}).get("extraclasspath_enabled", False)
+        if extraclasspath_enabled:
+            jar_args.extend(["--conf", f"spark.driver.extraClassPath={utilities_jar}"])
+            jar_args.extend(
+                ["--conf", f"spark.executor.extraClassPath={utilities_jar}"]
+            )
         return [
             spark_submit_script,
             "--master",
@@ -1223,6 +1229,12 @@ class CommandBuilder:
         main_jar = self._get_standalone_main_jar(sync_type)
         global_cfg = get_global_config(config=self._config)
         spark_submit_script = os.path.join(os.getenv("SPARK_HOME"), "bin", "spark-submit") if os.getenv("SPARK_HOME") else "spark-submit"
+        extraclasspath_enabled = self._config.get(sync_type, {}).get("extraclasspath_enabled", False)
+        if extraclasspath_enabled:
+            jar_args.extend(["--conf", f"spark.driver.extraClassPath={main_jar}"])
+            jar_args.extend(
+                ["--conf", f"spark.executor.extraClassPath={main_jar}"]
+            )
         return [
             spark_submit_script,
             "--master",
@@ -1321,6 +1333,12 @@ df.write.format("hudi").\\
         main_jar = self._get_standalone_main_jar(sync_type)
         global_cfg = get_global_config(config=self._config)
         spark_submit_script = os.path.join(os.getenv("SPARK_HOME"), "bin", "spark-submit") if os.getenv("SPARK_HOME") else "spark-submit"
+        extraclasspath_enabled = self._config.get(sync_type, {}).get("extraclasspath_enabled", False)
+        if extraclasspath_enabled:
+            jar_args.extend(["--conf", f"spark.driver.extraClassPath={main_jar}"])
+            jar_args.extend(
+                ["--conf", f"spark.executor.extraClassPath={main_jar}"]
+            )
         return [
             spark_submit_script,
             "--master",
