@@ -1130,7 +1130,7 @@ class CommandBuilder:
     def _get_jar_args_and_utilities_jar(self, sync_type: str) -> tuple[List[str], str]:
         all_jars = self.get_all_jars()
         jars = [self.validate_and_get_jar(all_jars["hudi_spark_jar"], "Hudi Spark")]
-        packages = self._config.get(sync_type, self._config.get("global",{}).get("packages", "")).replace(" ", "").strip()
+        packages = self._config.get(sync_type, {}).get("packages", "").replace(" ", "").strip()
         if sync_type == "bigquery":
             jars.append(self.validate_and_get_jar(all_jars["gcp_jar"], "Hudi GCP"))
         if sync_type == "glue":
@@ -1163,7 +1163,7 @@ class CommandBuilder:
     def build_inline_command(self, sync_type: str) -> List[str]:
         jar_args, utilities_jar = self._get_jar_args_and_utilities_jar(sync_type)
         global_cfg = get_global_config(config=self._config)
-        extraclasspath_enabled = global_cfg.get("extraclasspath_enabled", False)
+        extraclasspath_enabled = self._config.get(sync_type, {}).get("extraclasspath_enabled", False)
         if extraclasspath_enabled:
             jar_args.extend(["--conf", f"spark.driver.extraClassPath={utilities_jar}"])
             jar_args.extend(
