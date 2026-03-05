@@ -340,6 +340,7 @@ def validate_datahub_dataset(
         "count": 10,
         "input": f"{database_name}.{table_name}",
     }
+    LOGGER.info("Searching for dataset: %s in DataHub", payload)
     try:
         cmd = [
                 "curl",
@@ -372,10 +373,12 @@ def validate_datahub_dataset(
         data = json.loads(out)
         entities = (data.get("value") or {}).get("entities") or []
         match = f"{database_name}.{table_name}"
+        LOGGER.info("Entities: %s", entities)
         for e in entities:
             entity = e.get("entity")
             entity_platform = entity.split(",")[0].split(":")[-1]
             entity_database_table = entity.split(",")[1]
+            LOGGER.info("Entity platform: %s, Entity database table: %s", entity_platform, entity_database_table)
             if entity_platform == "hudi" and entity_database_table == match:
                 return ValidationResult(
                     "datahub_dataset",
@@ -1500,8 +1503,6 @@ def main() -> int:
                     log_failure(
                         f"Failed to run the Hudi Ingestion and Catalog Sync for the {sync_type_name} using HoodieStreamer with exit code {result.returncode}. Check the log file {log_file} for more details."
                     )
-                    with open(log_file, "r") as f:
-                        LOGGER.info("Log file content: %s", f.read())
                     return result.returncode
                 log_success("Hudi Ingestion and Catalog Sync using HoodieStreamer completed")
             if args.validate:
@@ -1529,8 +1530,6 @@ def main() -> int:
                     LOGGER.error(
                         f"Failed to run the Hudi Ingestion using HoodieStreamer with exit code {r1.returncode}. Check the log file {log_file} for more details."
                     )
-                    with open(log_file, "r") as f:
-                        LOGGER.info("Log file content: %s", f.read())
                     return r1.returncode
                 log_success("Hudi Ingestion using HoodieStreamer completed")
                 log_step("Running Standalone Catalog Sync")
